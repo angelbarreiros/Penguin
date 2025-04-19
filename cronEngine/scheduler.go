@@ -1,6 +1,7 @@
 package cronengine
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -18,13 +19,14 @@ type Scheduler struct {
 	mux    sync.Mutex
 	jobs   []job
 }
-
+type JobFunction func(f func(args ...any) []any, args ...any) []any
 type job struct {
 	id       string
 	mode     uint // 0 = one time, 1 = interval
 	when     time.Time
 	interval time.Duration
 	nextRun  time.Time
+	_        *context.Context
 }
 
 var schedulerInstance *Scheduler = nil
@@ -36,7 +38,6 @@ func StartScheduler() *Scheduler {
 
 }
 func (s *Scheduler) ScheduleJob(name string, when time.Time) (string, error) {
-	schedulerInstance.mux.Lock()
 	if len(name) > 40 {
 		return "", fmt.Errorf("job name cannot exceed 40 characters")
 	}
@@ -53,13 +54,16 @@ func (s *Scheduler) ScheduleJob(name string, when time.Time) (string, error) {
 		id:   sb.String(),
 		when: when,
 	}
+	s.mux.Lock()
 
-	schedulerInstance.chanel <- job
+	log.Printf("Job %s added to scheduler\n", job.id)
+	s.jobs = append(s.jobs, job)
+	s.mux.Unlock()
+	s.chanel <- job
 
 	return sb.String(), nil
 }
 func (s *Scheduler) ScheduleIntervalJob(name string, interval time.Duration) (string, error) {
-	schedulerInstance.mux.Lock()
 	if len(name) > 40 {
 		return "", fmt.Errorf("job name cannot exceed 40 characters")
 	}
@@ -77,9 +81,11 @@ func (s *Scheduler) ScheduleIntervalJob(name string, interval time.Duration) (st
 		interval: interval,
 		nextRun:  time.Now().Add(interval),
 	}
-
-	schedulerInstance.chanel <- intervalJob
-
+	s.mux.Lock()
+	log.Printf("Job %s added to scheduler\n", intervalJob.id)
+	s.jobs = append(s.jobs, intervalJob)
+	s.mux.Unlock()
+	s.chanel <- intervalJob
 	return sb.String(), nil
 }
 func (s *Scheduler) RemoveJob(id string) error {
@@ -100,56 +106,62 @@ func initScheduler() {
 		jobs:   make([]job, 0),
 		ticker: nil,
 	}
-	go chanelListen()
+	go schedulerInstance.schedulerLoop()
 
 }
-func chanelListen() {
 
-	for job := range schedulerInstance.chanel {
+func (s *Scheduler) schedulerLoop() {
+	for {
+		select {
+		case job := <-s.chanel:
+			s.mux.Lock()
+			log.Printf("Processing job from channel: %s", job.id)
+			s.awakeTicker()
+			s.mux.Unlock()
 
-		schedulerInstance.jobs = append(schedulerInstance.jobs, job)
-		schedulerInstance.mux.Unlock()
-		log.Printf("Job %s added to scheduler\n", job.id)
-		if schedulerInstance.ticker == nil {
-			schedulerInstance.ticker = time.NewTicker(1 * time.Second)
-			go tickerLogic()
-			log.Println("Scheduler started")
+		case <-s.getTickerChannel():
+			s.processJobs()
+
 		}
-
 	}
 }
-func tickerLogic() {
-	for range schedulerInstance.ticker.C {
-		schedulerInstance.mux.Lock()
-		if len(schedulerInstance.jobs) == 0 {
-			log.Println("No jobs scheduled - Scheduler goes to sleep")
-			schedulerInstance.ticker.Stop()
-			schedulerInstance.ticker = nil
-			schedulerInstance.mux.Unlock()
-			return
 
-		}
-		schedulerInstance.mux.Unlock()
-		for i := len(schedulerInstance.jobs) - 1; i >= 0; i-- {
-			if schedulerInstance.jobs[i].mode == 0 {
-				if time.Now().After(schedulerInstance.jobs[i].when) {
-					log.Printf("Job %s executed", schedulerInstance.jobs[i].id)
-					schedulerInstance.jobs = slices.Delete(schedulerInstance.jobs, i, i+1)
-				}
-			} else if schedulerInstance.jobs[i].mode == 1 {
-				if time.Now().After(schedulerInstance.jobs[i].nextRun) {
-					log.Printf("Interval Job %s executed", schedulerInstance.jobs[i].id)
-					schedulerInstance.jobs[i].nextRun = time.Now().Add(schedulerInstance.jobs[i].interval)
-				}
-			} else {
-				log.Fatal("Unknown job mode")
-
-			}
-
-		}
-
+func (s *Scheduler) getTickerChannel() <-chan time.Time {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	if s.ticker != nil {
+		return s.ticker.C
 	}
 
+	return nil
+}
+func (s *Scheduler) processJobs() {
+	if len(s.jobs) == 0 {
+		log.Println("No jobs scheduled - Scheduler goes to sleep")
+		s.mux.Lock()
+		s.ticker.Stop()
+		s.ticker = nil
+		s.mux.Unlock()
+		return
+	}
+	for i := len(s.jobs) - 1; i >= 0; i-- {
+		if s.jobs[i].mode == 0 && time.Now().After(s.jobs[i].when) {
+			log.Printf("Job %s executed", s.jobs[i].id)
+			s.mux.Lock()
+			s.jobs = slices.Delete(s.jobs, i, i+1)
+			s.mux.Unlock()
+		} else if s.jobs[i].mode == 1 && time.Now().After(s.jobs[i].nextRun) {
+			log.Printf("Interval Job %s executed", s.jobs[i].id)
+			s.jobs[i].nextRun = time.Now().Add(s.jobs[i].interval)
+		}
+	}
+}
+func (s *Scheduler) awakeTicker() {
+	if s.ticker == nil {
+		s.ticker = time.NewTicker(1 * time.Second)
+		log.Println("Scheduler started")
+
+	}
 }
 func removeById(id string) error {
 	schedulerInstance.mux.Lock()
