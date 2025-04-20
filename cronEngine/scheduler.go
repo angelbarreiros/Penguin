@@ -1,127 +1,160 @@
 package cronengine
 
 import (
-	"context"
 	"fmt"
-	"log"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"slices"
-
-	"github.com/google/uuid"
 )
 
 type Scheduler struct {
 	chanel chan job
 	ticker *time.Ticker
-	mux    sync.Mutex
-	jobs   []job
+	mux    sync.RWMutex
+	jobs   map[uint64]job
+	wg     *sync.WaitGroup
 }
-type JobFunction func(f func(args ...any) []any, args ...any) []any
+type JobFuncInterface interface {
+	Execute() []any
+}
+type jobFunction struct {
+	function      JobFuncInterface
+	returnChannel chan []any
+}
 type job struct {
-	id       string
-	mode     uint // 0 = one time, 1 = interval
-	when     time.Time
-	interval time.Duration
-	nextRun  time.Time
-	_        *context.Context
+	id          uint64
+	mode        uint // 0 = one time, 1 = interval
+	when        time.Time
+	interval    time.Duration
+	nextRun     time.Time
+	jobFunction *jobFunction
 }
 
 var schedulerInstance *Scheduler = nil
 var once sync.Once
+var jobCounter uint64
 
 func StartScheduler() *Scheduler {
 	once.Do(initScheduler)
 	return schedulerInstance
+}
+
+func JobFunction(f JobFuncInterface, args ...any) *jobFunction {
+	// checkReflectionErr := checkReflection(f, args...)
+	// if checkReflectionErr != nil {
+	// 	panic(checkReflectionErr)
+	// }
+	return &jobFunction{
+		function: f,
+	}
+}
+func (j *jobFunction) WithReturnChannel() (*jobFunction, chan []any) {
+	returnChannel := make(chan []any, 1)
+	j.returnChannel = returnChannel
+	return j, j.returnChannel
 
 }
-func (s *Scheduler) ScheduleJob(name string, when time.Time) (string, error) {
-	if len(name) > 40 {
-		return "", fmt.Errorf("job name cannot exceed 40 characters")
-	}
+func (s *Scheduler) ScheduleJob(when time.Time, todo *jobFunction) (uint64, error) {
 	if when.Before(time.Now()) {
-		return "", fmt.Errorf("job time cannot be in the past")
+		return 0, fmt.Errorf("job time cannot be in the past")
 	}
-	var sb strings.Builder
-	sb.WriteString(name)
-	sb.WriteString("-")
-	sb.WriteString(uuid.NewString())
+	if todo == nil {
+		return 0, fmt.Errorf("job function cannot be nil")
+	}
+
+	var id uint64 = atomic.AddUint64(&jobCounter, 1)
 
 	var job job = job{
-		mode: 0,
-		id:   sb.String(),
-		when: when,
+		mode:        0,
+		id:          id,
+		when:        when,
+		jobFunction: todo,
 	}
 	s.mux.Lock()
-
-	log.Printf("Job %s added to scheduler\n", job.id)
-	s.jobs = append(s.jobs, job)
+	s.jobs[job.id] = job
 	s.mux.Unlock()
 	s.chanel <- job
 
-	return sb.String(), nil
+	return id, nil
 }
-func (s *Scheduler) ScheduleIntervalJob(name string, interval time.Duration) (string, error) {
-	if len(name) > 40 {
-		return "", fmt.Errorf("job name cannot exceed 40 characters")
-	}
+func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, todo *jobFunction) (uint64, error) {
 	if interval <= 0 {
-		return "", fmt.Errorf("interval must be greater than zero")
+		return 0, fmt.Errorf("interval must be greater than zero")
 	}
-	var sb strings.Builder
-	sb.WriteString(name)
-	sb.WriteString("-")
-	sb.WriteString(uuid.NewString())
 
+	var id uint64 = atomic.AddUint64(&jobCounter, 1)
 	var intervalJob job = job{
-		mode:     1,
-		id:       sb.String(),
-		interval: interval,
-		nextRun:  time.Now().Add(interval),
+		mode:        1,
+		id:          id,
+		interval:    interval,
+		nextRun:     time.Now().Add(interval),
+		jobFunction: todo,
 	}
 	s.mux.Lock()
-	log.Printf("Job %s added to scheduler\n", intervalJob.id)
-	s.jobs = append(s.jobs, intervalJob)
+
+	s.jobs[intervalJob.id] = intervalJob
 	s.mux.Unlock()
 	s.chanel <- intervalJob
-	return sb.String(), nil
+	return id, nil
 }
-func (s *Scheduler) RemoveJob(id string) error {
-	if id == "" {
+func (s *Scheduler) RemoveJob(id uint64) error {
+	if id == 0 {
 		return fmt.Errorf("job id cannot be empty")
-
 	}
-	if err := removeById(id); err != nil {
+	if err := s.removeById(id); err != nil {
 		return err
 	}
-	log.Printf("Job %s removed from scheduler\n", id)
+
 	return nil
 }
+func (s *Scheduler) GetChannel(id uint64) chan []any {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	if job, exists := s.jobs[id]; exists {
+		if job.jobFunction == nil {
+			return nil
+		}
+		return job.jobFunction.returnChannel
+	}
+	return nil
+}
+func (s *Scheduler) Stop() {
+	s.mux.Lock()
+	if s.ticker != nil {
+		s.ticker.Stop()
+		s.ticker = nil
+	}
+	s.mux.Unlock()
+	close(s.chanel)
 
+	s.wg.Wait()
+
+}
 func initScheduler() {
 	schedulerInstance = &Scheduler{
 		chanel: make(chan job),
-		jobs:   make([]job, 0),
+		jobs:   make(map[uint64]job, 10000),
 		ticker: nil,
+		wg:     new(sync.WaitGroup),
 	}
+
+	schedulerInstance.wg.Add(1)
 	go schedulerInstance.schedulerLoop()
 
 }
 
 func (s *Scheduler) schedulerLoop() {
+	defer s.wg.Done()
 	for {
 		select {
-		case job := <-s.chanel:
-			s.mux.Lock()
-			log.Printf("Processing job from channel: %s", job.id)
-			s.awakeTicker()
-			s.mux.Unlock()
-
 		case <-s.getTickerChannel():
 			s.processJobs()
 
+		case _, ok := <-s.chanel:
+			if !ok {
+				return
+			}
+			s.awakeTicker()
 		}
 	}
 }
@@ -135,43 +168,60 @@ func (s *Scheduler) getTickerChannel() <-chan time.Time {
 
 	return nil
 }
+func (s *Scheduler) awakeTicker() {
+	s.mux.Lock()
+	if s.ticker == nil {
+		s.ticker = time.NewTicker(1 * time.Second)
+
+	}
+	s.mux.Unlock()
+}
 func (s *Scheduler) processJobs() {
 	if len(s.jobs) == 0 {
-		log.Println("No jobs scheduled - Scheduler goes to sleep")
 		s.mux.Lock()
 		s.ticker.Stop()
 		s.ticker = nil
+		s.jobs = make(map[uint64]job, 10000)
 		s.mux.Unlock()
 		return
 	}
-	for i := len(s.jobs) - 1; i >= 0; i-- {
-		if s.jobs[i].mode == 0 && time.Now().After(s.jobs[i].when) {
-			log.Printf("Job %s executed", s.jobs[i].id)
-			s.mux.Lock()
-			s.jobs = slices.Delete(s.jobs, i, i+1)
-			s.mux.Unlock()
-		} else if s.jobs[i].mode == 1 && time.Now().After(s.jobs[i].nextRun) {
-			log.Printf("Interval Job %s executed", s.jobs[i].id)
-			s.jobs[i].nextRun = time.Now().Add(s.jobs[i].interval)
+	s.mux.RLock()
+	var jobsToDelete []uint64
+	for k, v := range s.jobs {
+		if v.mode == 0 && time.Now().After(v.when) {
+			v.jobFunction.executeJob()
+			jobsToDelete = append(jobsToDelete, k)
+		} else if v.mode == 1 && time.Now().After(v.nextRun) {
+			v.jobFunction.executeJob()
+			v.nextRun = time.Now().Add(v.interval)
 		}
 	}
-}
-func (s *Scheduler) awakeTicker() {
-	if s.ticker == nil {
-		s.ticker = time.NewTicker(1 * time.Second)
-		log.Println("Scheduler started")
+	s.mux.RUnlock()
 
-	}
-}
-func removeById(id string) error {
-	schedulerInstance.mux.Lock()
-	for i := len(schedulerInstance.jobs) - 1; i >= 0; i-- {
-		if schedulerInstance.jobs[i].id == id {
-			schedulerInstance.jobs = slices.Delete(schedulerInstance.jobs, i, i+1)
-			return nil
+	if len(jobsToDelete) > 0 {
+		s.mux.Lock()
+		for _, k := range jobsToDelete {
+			delete(s.jobs, k)
 		}
+		s.mux.Unlock()
 	}
-	schedulerInstance.mux.Unlock()
-	return fmt.Errorf("job with id %s not found", id)
 
+}
+
+func (s *Scheduler) removeById(id uint64) error {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+
+	if _, exists := s.jobs[id]; exists {
+		delete(s.jobs, id)
+		return nil
+	}
+	return fmt.Errorf("job with id %d not found", id)
+}
+func (j jobFunction) executeJob() {
+	var results = j.function.Execute()
+	if j.returnChannel != nil && len(results) > 0 {
+		j.returnChannel <- results
+		close(j.returnChannel)
+	}
 }

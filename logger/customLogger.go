@@ -60,7 +60,7 @@ type Options struct {
 	Prefix         string        // log prefix
 	RotationTime   time.Duration // log rotation time
 	RotationSize   int64         // log rotation size
-	OutputFile     *os.File      // log output file
+	FilePath       string        // log output file
 	Compress       bool          // log compression
 	CompressSuffix string        // log compression suffix
 }
@@ -114,18 +114,23 @@ func LoggerWithOptions(options Options) *Logger {
 	if compressSuffix == "" {
 		compressSuffix = default_compress_suffix
 	}
+	var outputFile, err = os.OpenFile(options.FilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	defer outputFile.Close()
+	if err != nil {
+		panic(err)
+	}
 
-	useColors := options.OutputFile == nil
+	useColors := outputFile == nil
 
-	if options.OutputFile != nil {
-		logger.SetOutput(options.OutputFile)
+	if outputFile != nil {
+		logger.SetOutput(outputFile)
 	}
 
 	var newLoggerWithOptions = Logger{
 		logger:         logger,
 		flag:           flags,
 		prefix:         prefix,
-		outputFile:     options.OutputFile,
+		outputFile:     outputFile,
 		rotationTime:   rotationTime,
 		rotationSize:   rotationSize,
 		compress:       options.Compress,

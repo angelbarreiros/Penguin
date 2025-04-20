@@ -1,4 +1,4 @@
-package loggertests
+package benchmarks
 
 import (
 	"angelotero/commonBackend/logger"
@@ -6,8 +6,6 @@ import (
 
 	"github.com/fortytw2/leaktest"
 )
-
-func Init() {}
 
 func BenchmarkLoggerColdStart(b *testing.B) {
 	b.StopTimer()
