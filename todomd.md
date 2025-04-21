@@ -4,3 +4,5 @@
 3- Añadir Funciones Genéricas {cm:2025-04-20}
 # Menos prioritario
 
+
+Diferencair entre sleep y pause
