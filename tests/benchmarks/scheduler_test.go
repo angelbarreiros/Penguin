@@ -24,7 +24,6 @@ func BenchmarkCronEngineJobs(b *testing.B) {
 	for b.Loop() {
 		var job = cronengine.JobFunction(functionSum)
 		var _, err = sch.ScheduleJob(time.Now().Add(1*time.Second), job)
-
 		if err != nil {
 			b.Error(err)
 

@@ -167,17 +167,22 @@ func (s *Scheduler) IsRunning() bool {
 	return s.isRunning
 }
 
+// Pause stops the Scheduler's ticker and sets its state to not running.
+// This effectively pauses the Scheduler, similar to turning it off and on again,
+// which may use more memory as resources are reallocated when resumed.
+// Note: The Scheduler will sleep if there are no jobs currently running.
 func (s *Scheduler) Pause() {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	if s.isRunning {
 		log.Println("Scheduler Paused")
-		s.ticker.Stop()
-		s.ticker = nil
+		if s.ticker != nil {
+			s.ticker.Stop()
+			s.ticker = nil
+		}
 		s.isRunning = false
 		s.isSleeping = false
 	}
-
 }
 func (s *Scheduler) UnPause() {
 	s.mux.Lock()
@@ -186,29 +191,32 @@ func (s *Scheduler) UnPause() {
 	if !s.isRunning {
 		log.Println("Scheduler Unpaused")
 		s.isRunning = true
-		s.ticker = time.NewTicker(1 * time.Second)
+		if s.ticker != nil {
+			s.ticker.Reset(time.Second)
+		} else {
+			s.ticker = time.NewTicker(time.Second)
+		}
 		s.isSleeping = false
 	}
-
 }
 func (s *Scheduler) sleep() {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	if !s.isSleeping {
 		log.Println("Scheduler sleeps")
-		s.ticker.Stop()
-		s.ticker = nil
+		if s.ticker != nil {
+			s.ticker.Stop()
+		}
 		s.isRunning = false
 		s.isSleeping = true
 	}
-
 }
 func (s *Scheduler) awake() {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	if s.isSleeping {
 		log.Println("Scheduler awakes")
-		s.ticker = time.NewTicker(1 * time.Second)
+		s.ticker.Reset(time.Second)
 		s.isRunning = true
 		s.isSleeping = false
 	}
@@ -258,7 +266,6 @@ func (s *Scheduler) getTickerChannel() <-chan time.Time {
 	}
 	return make(<-chan time.Time)
 }
-
 func (s *Scheduler) processJobs() {
 	s.mux.RLock()
 	if len(s.jobs) == 0 && s.isRunning && !s.isSleeping {
