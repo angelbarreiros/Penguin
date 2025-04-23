@@ -2,6 +2,7 @@ package benchmarks
 
 import (
 	cronengine "angelotero/commonBackend/scheduler"
+	"log"
 	"testing"
 	"time"
 
@@ -22,12 +23,14 @@ func BenchmarkCronEngineJobs(b *testing.B) {
 	var sch *cronengine.Scheduler = cronengine.StartScheduler()
 	var functionSum = functionSum{a: 1, b: 2}
 	for b.Loop() {
-		var job = cronengine.JobFunction(functionSum)
+		var job, ch = cronengine.JobFunction(functionSum).WithReturnChannel()
 		var _, err = sch.ScheduleJob(time.Now().Add(1*time.Second), job)
 		if err != nil {
 			b.Error(err)
 
 		}
+		var result = <-ch
+		log.Println(result)
 
 	}
 	defer sch.Stop()

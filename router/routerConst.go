@@ -11,11 +11,3 @@ const (
 	OPTIONS HTTPMethod = "OPTIONS"
 	HEAD    HTTPMethod = "HEAD"
 )
-
-type middlewareType string
-
-const (
-	MethodMiddleware middlewareType = "method"
-	AuthMiddleware   middlewareType = "auth"
-	RoleMiddleware   middlewareType = "role"
-)

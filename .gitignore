@@ -3,3 +3,5 @@ tests/output
 main.go
 .vscode
 private_key.pem
+private_key2.pem
+tokens_de_prueba.txt

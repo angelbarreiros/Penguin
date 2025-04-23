@@ -115,7 +115,6 @@ func LoggerWithOptions(options Options) *Logger {
 		compressSuffix = default_compress_suffix
 	}
 	var outputFile, err = os.OpenFile(options.FilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	defer outputFile.Close()
 	if err != nil {
 		panic(err)
 	}
@@ -171,7 +170,9 @@ func (l Logger) Printf(s string, v ...any) {
 }
 func (l Logger) Info(s string) {
 	l.logger.SetPrefix(prefixString(l.useColors, "Info: ", colorGreen))
+
 	l.logger.Output(2, s)
+
 	l.logger.SetPrefix(l.prefix)
 }
 
