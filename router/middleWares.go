@@ -8,53 +8,10 @@ import (
 
 type AuthType = auth.AuthType
 
-func methodMiddlewareFunc(method HTTPMethod) middlewareFunc {
-	return func(next handleFunc) handleFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != string(method) {
-				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			next(w, r)
-		}
-	}
+func WithAuthMiddleWare(auth AuthType, hf handleFunc) handleFunc {
+	return authMiddleWareFunc(auth)(hf)
 }
 
-func methodMiddleware(method HTTPMethod) *middleware {
-	return &middleware{
-		priority:       1,
-		middlewareFunc: methodMiddlewareFunc(method),
-	}
-
-}
-func WithMethodMiddleWare(method HTTPMethod) routeOptions {
-	return func(r *route) {
-		if _, exists := r.usedMiddlewareMap[MethodMiddleware]; exists {
-			panic("Method middleware already used")
-
-		}
-		r.middlewares = append(r.middlewares, methodMiddleware(method))
-		r.usedMiddlewareMap[MethodMiddleware] = true
-	}
-}
-
-func WithAuthMiddleWate(auth AuthType) routeOptions {
-	return func(r *route) {
-		if _, exists := r.usedMiddlewareMap[AuthMiddleware]; exists {
-			panic("Method middleware already used")
-
-		}
-		r.middlewares = append(r.middlewares, authMiddleWare(auth))
-		r.usedMiddlewareMap[AuthMiddleware] = true
-	}
-}
-
-func authMiddleWare(auth AuthType) *middleware {
-	return &middleware{
-		priority:       0,
-		middlewareFunc: authMiddleWareFunc(auth),
-	}
-}
 func authMiddleWareFunc(auth AuthType) middlewareFunc {
 	return func(hf handleFunc) handleFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +21,7 @@ func authMiddleWareFunc(auth AuthType) middlewareFunc {
 
 			}
 			user, err := auth.GetUser(r)
+
 			if err != nil {
 				http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
 				return

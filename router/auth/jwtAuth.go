@@ -15,31 +15,31 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-type optionsFunc func(*JwtAuth[jwt.Claims])
-type JwtAuth[T jwt.Claims] struct {
+type optionsFunc func(*JwtAuth)
+type JwtAuth struct {
 	authKey    *ecdsa.PrivateKey
-	token      *jwt.Token
-	claimsType T
-	options    jwtAuthOptions
+	claimsType jwt.Claims
+	tokeString string
+	options    *jwtAuthOptions
 }
 type jwtAuthOptions struct {
 	Timeout    time.Duration
 	ContextKey any
 }
 
-var jwtAuthInstance *JwtAuth[jwt.Claims]
+var jwtAuthInstance *JwtAuth
 var jwtOnce sync.Once
 
-func NewJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc) *JwtAuth[jwt.Claims] {
+func NewJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc) *JwtAuth {
 	return initJwtAuth(secret, claimsType, options...)
 }
 
-func NewSingletonJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc) *JwtAuth[jwt.Claims] {
+func NewSingletonJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc) *JwtAuth {
 	jwtOnce.Do(func() { initJwtAuthInstance(secret, claimsType, options...) })
 	return jwtAuthInstance
 }
 
-func (j *JwtAuth[T]) Authorize(r *http.Request) (bool, error) {
+func (j *JwtAuth) Authorize(r *http.Request) (bool, error) {
 	var jwtTokenString string = r.Header.Get("Authorization")
 	if strings.TrimSpace(jwtTokenString) == "" {
 		return false, fmt.Errorf("Authorization header is missing")
@@ -54,47 +54,54 @@ func (j *JwtAuth[T]) Authorize(r *http.Request) (bool, error) {
 	}
 
 	var tokenString string = strings.TrimSpace(tokenParts[1])
+	j.tokeString = tokenString
+	return true, nil
+}
+func (j *JwtAuth) GetUser(r *http.Request) (any, error) {
 	var jwtToken *jwt.Token
 	var err error
-	jwtToken, err = jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+	jwtToken, err = jwt.ParseWithClaims(j.tokeString, j.claimsType, func(t *jwt.Token) (any, error) {
 		return &j.authKey.PublicKey, nil
 	})
 
 	if err != nil {
-		return false, fmt.Errorf("failed to parse token: %v", err)
+		return nil, fmt.Errorf("failed to parse token: %v", err)
 	}
 
 	if !jwtToken.Valid {
-		return false, fmt.Errorf("token is invalid")
+		return nil, fmt.Errorf("token is invalid")
 	}
-	j.token = jwtToken
 
-	return true, nil
-}
-func (j *JwtAuth[T]) GetUser(r *http.Request) (any, error) {
-	if j.token == nil {
+	if jwtToken == nil {
 		return nil, fmt.Errorf("no token available")
 	}
-	claims, ok := j.token.Claims.(T)
-	if !ok {
-		return nil, fmt.Errorf("invalid claims format")
+	var expirationTime *jwt.NumericDate
+	expirationTime, err = jwtToken.Claims.GetExpirationTime()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get expiration time: %v", err)
 	}
+	if expirationTime == nil {
+		return nil, fmt.Errorf("expiration time is missing")
 
-	return claims, nil
+	}
+	if expirationTime.Before(time.Now()) {
+		return nil, fmt.Errorf("token is expired")
+	}
+	return jwtToken.Claims, nil
 }
-func (j *JwtAuth[T]) GetTimeout() time.Duration {
+func (j *JwtAuth) GetTimeout() time.Duration {
 	return j.options.Timeout
 }
-func (j *JwtAuth[T]) GetContextKey() any {
+func (j *JwtAuth) GetContextKey() any {
 	return j.options.ContextKey
 }
 func WithCustomTimeout(timeout time.Duration) optionsFunc {
-	return func(ja *JwtAuth[jwt.Claims]) {
+	return func(ja *JwtAuth) {
 		ja.options.Timeout = timeout
 	}
 }
 func WithCustomContextKey(key any) optionsFunc {
-	return func(ja *JwtAuth[jwt.Claims]) {
+	return func(ja *JwtAuth) {
 		ja.options.ContextKey = key
 	}
 }
@@ -102,7 +109,7 @@ func WithCustomContextKey(key any) optionsFunc {
 func initJwtAuthInstance(secret *os.File, claimsType jwt.Claims, options ...optionsFunc) {
 	jwtAuthInstance = initJwtAuth(secret, claimsType, options...)
 }
-func initJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc) *JwtAuth[jwt.Claims] {
+func initJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc) *JwtAuth {
 	var bytes []byte
 	var err error
 	bytes, err = io.ReadAll(secret)
@@ -115,11 +122,11 @@ func initJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc)
 	if err != nil {
 		panic("cannot load jwt secret file" + err.Error())
 	}
-	var jwtAuth *JwtAuth[jwt.Claims]
-	jwtAuth = &JwtAuth[jwt.Claims]{
+	var jwtAuth *JwtAuth
+	jwtAuth = &JwtAuth{
 		authKey:    key,
 		claimsType: claimsType,
-		options: jwtAuthOptions{
+		options: &jwtAuthOptions{
 			Timeout:    time.Duration(DefaultContextTimeout),
 			ContextKey: DefaultContextKey,
 		},
@@ -129,6 +136,7 @@ func initJwtAuth(secret *os.File, claimsType jwt.Claims, options ...optionsFunc)
 	}
 	return jwtAuth
 }
+
 func loadPrivateKeyFromFile(keyPem []byte) (*ecdsa.PrivateKey, error) {
 
 	block, _ := pem.Decode(keyPem)
