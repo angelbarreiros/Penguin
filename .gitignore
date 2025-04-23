@@ -2,3 +2,4 @@ logs
 tests/output
 main.go
 .vscode
+private_key.pem
