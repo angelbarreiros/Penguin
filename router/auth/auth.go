@@ -16,7 +16,7 @@ const (
 	DefaultContextKey     string = "user"
 )
 
-type AuthType interface {
+type PlainAuthInterface interface {
 	Authorize(r *http.Request) (bool, error)
 	GetUser(r *http.Request) (any, error)
 	GetTimeout() time.Duration
@@ -25,6 +25,13 @@ type AuthType interface {
 type RBACClaims interface {
 	jwt.Claims
 	GetRoles() []string
+}
+type RBACAuthInterface interface {
+	Authorize(r *http.Request) (bool, error)
+	GetUser(r *http.Request) (any, error)
+	RBAC(allowedRoles []string) bool
+	GetTimeout() time.Duration
+	GetContextKey() any
 }
 
 func loadPrivateKeyFromFile(keyPem []byte) (*ecdsa.PrivateKey, error) {

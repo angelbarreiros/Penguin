@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"slices"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -88,6 +90,19 @@ func (j *RBACJwtAuth) GetUser(r *http.Request) (any, error) {
 	}
 
 	return jwtToken.Claims, nil
+}
+func (j *RBACJwtAuth) RBAC(allowedRoles []string) bool {
+
+	var roles []string = j.claimsType.GetRoles()
+	if len(roles) == 0 {
+		return false
+	}
+	for _, role := range roles {
+		if slices.Contains(allowedRoles, role) {
+			return true
+		}
+	}
+	return false
 }
 
 func (j *RBACJwtAuth) GetTimeout() time.Duration {

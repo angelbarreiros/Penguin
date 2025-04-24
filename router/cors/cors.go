@@ -6,7 +6,6 @@ const (
 
 type CORSConfig struct {
 	allowedOrigins     []string
-	allowedMethods     []string
 	allowedHeaders     []string
 	exposedHeaders     []string
 	allowCredentials   bool
@@ -16,10 +15,6 @@ type CORSConfig struct {
 
 func (c *CORSConfig) AllowedOrigins() []string {
 	return c.allowedOrigins
-}
-
-func (c *CORSConfig) AllowedMethods() []string {
-	return c.allowedMethods
 }
 
 func (c *CORSConfig) AllowedHeaders() []string {
@@ -45,7 +40,6 @@ func (c *CORSConfig) OptionsPassthrough() bool {
 func NewCORSConfig(options ...func(*CORSConfig)) *CORSConfig {
 	config := &CORSConfig{
 		allowedOrigins: []string{},
-		allowedMethods: []string{"GET", "OPTIONS"},
 
 		allowedHeaders: []string{
 			"Origin",
@@ -68,12 +62,6 @@ func NewCORSConfig(options ...func(*CORSConfig)) *CORSConfig {
 func WithAllowedOrigins(origins []string) func(*CORSConfig) {
 	return func(c *CORSConfig) {
 		c.allowedOrigins = origins
-	}
-}
-
-func WithAllowedMethods(methods []string) func(*CORSConfig) {
-	return func(c *CORSConfig) {
-		c.allowedMethods = methods
 	}
 }
 

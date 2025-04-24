@@ -1,8 +1,8 @@
 package router
 
 import (
+	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 )
 
@@ -12,7 +12,7 @@ type handleFunc func(http.ResponseWriter, *http.Request)
 
 type router struct {
 	mux    *http.ServeMux
-	routes map[string]bool
+	routes map[string]map[HTTPMethod]handleFunc
 }
 
 func (r *router) StartServer(s string) {
@@ -32,36 +32,52 @@ type Route struct {
 }
 
 func (r *router) NewRoute(route Route) {
-	var sb strings.Builder
-	sb.WriteString(string(route.Method))
-	sb.WriteString(" ")
-	sb.WriteString(route.Path)
-	if _, exists := r.routes[sb.String()]; exists {
-		panic("Route already exists: " + sb.String())
+	if r.routes[route.Path] == nil {
+		r.routes[route.Path] = make(map[HTTPMethod]handleFunc)
+		r.mux.HandleFunc(route.Path, r.methodHandler(route.Path))
 	}
-	r.routes[sb.String()] = true
-	var handler handleFunc = methodHandler(route)
-	r.mux.HandleFunc(route.Path, handler)
-}
 
-func methodHandler(route Route) handleFunc {
+	if _, exists := r.routes[route.Path][route.Method]; exists {
+		panic(fmt.Sprintf("Route already exists: %s %s", route.Method, route.Path))
+	}
+
+	r.routes[route.Path][route.Method] = route.Handler
+
+	for _, method := range route.AditionalMethods {
+		if _, exists := r.routes[route.Path][method]; exists {
+			panic(fmt.Sprintf("Route already exists: %s %s", method, route.Path))
+		}
+		r.routes[route.Path][method] = route.Handler
+	}
+}
+func (r *router) methodHandler(path string) handleFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		var allowedMethod bool = slices.Contains(append(route.AditionalMethods, route.Method), HTTPMethod(req.Method))
-		if !allowedMethod {
+		method := HTTPMethod(req.Method)
+		handlers := r.routes[path]
+
+		var allowedMethods []string
+		for m := range handlers {
+			allowedMethods = append(allowedMethods, string(m))
+		}
+		w.Header().Set("Allow", strings.Join(allowedMethods, ", "))
+
+		handler, exists := handlers[method]
+		if !exists {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		if req.Method == http.MethodOptions {
-			route.Handler(w, req)
-			return
-		}
-		if req.Method == http.MethodHead {
-			var rec *responseRecorder = &responseRecorder{ResponseWriter: w}
-			route.Handler(rec, req)
+			handler(w, req)
 			return
 		}
 
-		route.Handler(w, req)
+		if req.Method == http.MethodHead {
+			rec := &responseRecorder{ResponseWriter: w}
+			handler(rec, req)
+			return
+		}
+
+		handler(w, req)
 	}
 }
 
@@ -77,7 +93,7 @@ func initRouter() {
 	if nil == routerInstance {
 		routerInstance = &router{
 			mux:    http.NewServeMux(),
-			routes: make(map[string]bool),
+			routes: make(map[string]map[HTTPMethod]handleFunc),
 		}
 	}
 

@@ -10,11 +10,11 @@ import (
 	"strings"
 )
 
-func WithAuthMiddleWare(auth auth.AuthType, hf handleFunc) handleFunc {
+func WithAuthMiddleWare(auth auth.PlainAuthInterface, hf handleFunc) handleFunc {
 	return authMiddleWareFunc(auth)(hf)
 }
 
-func authMiddleWareFunc(auth auth.AuthType) middlewareFunc {
+func authMiddleWareFunc(auth auth.PlainAuthInterface) middlewareFunc {
 	return func(hf handleFunc) handleFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if auth == nil {
@@ -53,7 +53,6 @@ func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
 			}
 			if r.Method == http.MethodOptions {
 				w.Header().Set("Access-Control-Allow-Origin", strings.Join(corrsConfig.AllowedOrigins(), ","))
-				w.Header().Set("Access-Control-Allow-Methods", strings.Join(corrsConfig.AllowedMethods(), ","))
 				w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
 				w.Header().Set("Access-Control-Max-Age", strconv.Itoa(corrsConfig.MaxAge()))
 				if corrsConfig.AllowCredentials() {
@@ -80,7 +79,6 @@ func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
 
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", strings.Join(corrsConfig.AllowedMethods(), ","))
 			w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
 			w.Header().Set("Access-Control-Max-Age", strconv.Itoa(corrsConfig.MaxAge()))
 			if corrsConfig.AllowCredentials() {
@@ -94,9 +92,9 @@ func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
 	}
 }
 
-func WithAuthAndRBAC(authType *auth.RBACJwtAuth, roles []string, hf handleFunc) handleFunc {
+func WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf handleFunc) handleFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Autenticación
+
 		if authorize, err := authType.Authorize(r); !authorize || err != nil {
 			http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
 			return
@@ -112,29 +110,27 @@ func WithAuthAndRBAC(authType *auth.RBACJwtAuth, roles []string, hf handleFunc) 
 		defer cancel()
 		ctx = context.WithValue(ctx, authType.GetContextKey(), user)
 		r = r.WithContext(ctx)
-
-		// Verificar roles
-		claims, ok := user.(auth.RBACClaims)
-		if !ok {
-			http.Error(w, "Forbidden: Invalid claims type", http.StatusForbidden)
-			return
-		}
-
-		if !hasRequiredRole(claims.GetRoles(), roles) {
-			http.Error(w, "Forbidden: Insufficient privileges", http.StatusForbidden)
+		if !authType.RBAC(roles) {
+			http.Error(w, "Forbidden: You don't have the required role", http.StatusForbidden)
 			return
 		}
 
 		hf(w, r)
 	}
 }
-
-// Función auxiliar para verificar roles
-func hasRequiredRole(userRoles []string, requiredRoles []string) bool {
-	for _, required := range requiredRoles {
-		if slices.Contains(userRoles, required) {
-			return true
+func WithQueryParametersObligation(queryParameters []string, hf handleFunc) handleFunc {
+	return queryParametersObligation(queryParameters)(hf)
+}
+func queryParametersObligation(queryParameters []string) middlewareFunc {
+	return func(hf handleFunc) handleFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			for _, queryParameter := range queryParameters {
+				if r.URL.Query().Get(queryParameter) == "" {
+					http.Error(w, "Query parameter "+queryParameter+" is required", http.StatusBadRequest)
+					return
+				}
+			}
+			hf(w, r)
 		}
 	}
-	return false
 }
