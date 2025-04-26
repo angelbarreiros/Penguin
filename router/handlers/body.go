@@ -2,11 +2,10 @@ package handlers
 
 import (
 	routerErrors "angelotero/commonBackend/router/errors"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-
-	"github.com/bytedance/sonic"
 )
 
 func DeserializeBodyWithLimit(r *http.Request, dto any, maxBytes int64) error {
@@ -25,7 +24,7 @@ func DeserializeBodyWithLimit(r *http.Request, dto any, maxBytes int64) error {
 		return routerErrors.ErrRequestBodyInvalid(err.Error())
 	}
 
-	if err = sonic.Unmarshal(bytes, dto); err != nil {
+	if err = json.Unmarshal(bytes, dto); err != nil {
 		return err
 	}
 

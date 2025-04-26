@@ -1,33 +1,33 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
-
-	"github.com/bytedance/sonic"
 )
 
 func SendSuccessResponse(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if data != nil {
-		sonicBytes, err := sonic.Marshal(data)
+		jsonBytes, err := json.Marshal(data)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Write(sonicBytes)
+		w.Write(jsonBytes)
 	}
 }
+
 func SendErrorResponse(w http.ResponseWriter, statusCode int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	response := map[string]string{"error": message}
-	sonicBytes, err := sonic.Marshal(response)
+	jsonBytes, err := json.Marshal(response)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Write(sonicBytes)
+	w.Write(jsonBytes)
 }
 
 func SendNoContentResponse(w http.ResponseWriter) {

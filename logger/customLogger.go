@@ -1,223 +1,411 @@
 package logger
 
 import (
+	"compress/gzip"
 	"fmt"
-	"log"
+	"io"
 	"os"
-	"strconv"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
 
-const days = 30
-const hours = 24
-const hours_on_month = days * hours
-
-const default_level = 0
-const default_prefix = "LOG: "
-const default_size = 1024 * 1024 * 10 // 10MB
-const default_rotation_time = time.Duration(hours_on_month * time.Hour)
-const default_compress = false
-const default_compress_suffix = ".gz"
 const (
-	FlagDate         = 1 << iota // Include the date in the log (e.g., 2009/01/23)
-	FlagTime                     // Include the time in the log (e.g., 01:23:23)
-	FlagMicroseconds             // Include microsecond resolution (e.g., 01:23:23.123123)
-	FlagLongFile                 // Include full file path and line number (e.g., /a/b/c/d.go:23)
-	FlagShortFile                // Include short file name and line number (e.g., d.go:23)
-	FlagUTC                      // Use UTC instead of local time
-	FlagMsgPrefix                // Include a message prefix
-)
-const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
-	colorPurple = "\033[35m"
-	colorCyan   = "\033[36m"
-	colorWhite  = "\033[37m"
+	Reset  = "\033[0m"
+	Red    = "\033[31m"
+	Green  = "\033[32m"
+	Yellow = "\033[33m"
+	Blue   = "\033[34m"
+	Purple = "\033[35m"
+	Cyan   = "\033[36m"
+	White  = "\033[37m"
 )
 
-type Logger struct {
-	logger         *log.Logger
-	flag           int
-	prefix         string
-	outputFile     *os.File
-	rotationTime   time.Duration
-	rotationSize   int64
-	compress       bool
-	compressSuffix string
-	useColors      bool
+type LogLevel int
+
+const (
+	DEBUG LogLevel = iota
+	INFO
+	WARN
+	ERROR
+	FATAL
+)
+
+func (l LogLevel) String() string {
+	switch l {
+	case DEBUG:
+		return "DEBUG"
+	case INFO:
+		return "INFO"
+	case WARN:
+		return "WARN"
+	case ERROR:
+		return "ERROR"
+	case FATAL:
+		return "FATAL"
+	default:
+		return "UNKNOWN"
+	}
 }
 
-var loggerInstance *Logger = nil
-var once sync.Once
-
-type Options struct {
-	Flag           int           // log Flag
-	Prefix         string        // log prefix
-	RotationTime   time.Duration // log rotation time
-	RotationSize   int64         // log rotation size
-	FilePath       string        // log output file
-	Compress       bool          // log compression
-	CompressSuffix string        // log compression suffix
+func (l LogLevel) Color() string {
+	switch l {
+	case DEBUG:
+		return Cyan
+	case INFO:
+		return Green
+	case WARN:
+		return Yellow
+	case ERROR:
+		return Red
+	case FATAL:
+		return Purple
+	default:
+		return White
+	}
 }
 
-func DefaultLogger() *Logger {
-	once.Do(initLogger)
-	return loggerInstance
+type Logger interface {
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
+	Fatal(msg string, args ...any)
+	SetLevel(level LogLevel)
 }
 
-func initLogger() {
-	var logger = log.Default()
-	loggerInstance = &Logger{
-		logger:         logger,
-		flag:           default_level,
-		prefix:         default_prefix,
-		outputFile:     nil,
-		rotationTime:   default_rotation_time,
-		rotationSize:   default_size,
-		compress:       default_compress,
-		compressSuffix: default_compress_suffix,
-		useColors:      true,
-	}
-
+type FileLogger struct {
+	mu            sync.Mutex
+	file          *os.File
+	level         LogLevel
+	logDir        string
+	baseFileName  string
+	maxFileSizeMB int
+	maxAgeDays    int
 }
 
-func LoggerWithOptions(options Options) *Logger {
-	var logger *log.Logger = log.Default()
-	flags := options.Flag
-	if flags == 0 {
-		flags = default_level
-	}
-	logger.SetFlags(flags)
+var fileLoggerInstance *FileLogger
+var fileLoggerOnce sync.Once
 
-	prefix := options.Prefix
-	if prefix == "" {
-		prefix = default_prefix
-	}
-	logger.SetPrefix(prefix)
+type ConsoleLogger struct {
+	mu      sync.Mutex
+	level   LogLevel
+	colored bool
+}
 
-	rotationTime := options.RotationTime
-	if rotationTime == 0 {
-		rotationTime = default_rotation_time
+var consoleLoggerInstance *ConsoleLogger
+var consoleLoggerOnce sync.Once
+
+func GetFileLogger() *FileLogger {
+	fileLoggerOnce.Do(func() {
+		fileLoggerInstance = &FileLogger{
+			level:         INFO,
+			logDir:        "logs",
+			baseFileName:  "app.log",
+			maxFileSizeMB: 10,
+			maxAgeDays:    30,
+		}
+
+		if err := os.MkdirAll(fileLoggerInstance.logDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
+		}
+
+		fileLoggerInstance.openLogFile()
+	})
+	return fileLoggerInstance
+}
+
+func GetConsoleLogger() *ConsoleLogger {
+	consoleLoggerOnce.Do(func() {
+		consoleLoggerInstance = &ConsoleLogger{
+			level:   INFO,
+			colored: true,
+		}
+	})
+	return consoleLoggerInstance
+}
+
+func (l *FileLogger) Configure(logDir string, baseFileName string, maxFileSizeMB int, maxAgeDays int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	changed := false
+
+	if logDir != "" && logDir != l.logDir {
+		l.logDir = logDir
+		changed = true
 	}
 
-	rotationSize := options.RotationSize
-	if rotationSize == 0 {
-		rotationSize = default_size
+	if baseFileName != "" && baseFileName != l.baseFileName {
+		l.baseFileName = baseFileName
+		changed = true
 	}
 
-	compressSuffix := options.CompressSuffix
-	if compressSuffix == "" {
-		compressSuffix = default_compress_suffix
+	if maxFileSizeMB > 0 && maxFileSizeMB != l.maxFileSizeMB {
+		l.maxFileSizeMB = maxFileSizeMB
 	}
-	var outputFile, err = os.OpenFile(options.FilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+
+	if maxAgeDays > 0 && maxAgeDays != l.maxAgeDays {
+		l.maxAgeDays = maxAgeDays
+	}
+
+	if changed {
+		if l.file != nil {
+			l.file.Close()
+			l.file = nil
+		}
+
+		if err := os.MkdirAll(l.logDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
+		}
+
+		l.openLogFile()
+	}
+}
+
+// SetLevel sets the minimum log level for the file logger
+func (l *FileLogger) SetLevel(level LogLevel) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.level = level
+}
+
+// SetLevel sets the minimum log level for the console logger
+func (c *ConsoleLogger) SetLevel(level LogLevel) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.level = level
+}
+
+// EnableColors enables or disables colored output for the console logger
+func (c *ConsoleLogger) EnableColors(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.colored = enabled
+}
+
+// Debug logs a debug message
+func (l *FileLogger) Debug(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	l.logWithCaller(DEBUG, file, line, msg, args...)
+}
+
+// Info logs an info message
+func (l *FileLogger) Info(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	l.logWithCaller(INFO, file, line, msg, args...)
+}
+
+// Warn logs a warning message
+func (l *FileLogger) Warn(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	l.logWithCaller(WARN, file, line, msg, args...)
+}
+
+// Error logs an error message
+func (l *FileLogger) Error(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	l.logWithCaller(ERROR, file, line, msg, args...)
+}
+
+// Fatal logs a fatal message and exits the program
+func (l *FileLogger) Fatal(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	l.logWithCaller(FATAL, file, line, msg, args...)
+	os.Exit(1)
+}
+
+// Debug logs a debug message to console
+func (c *ConsoleLogger) Debug(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	c.logWithCaller(DEBUG, file, line, msg, args...)
+}
+
+// Info logs an info message to console
+func (c *ConsoleLogger) Info(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	c.logWithCaller(INFO, file, line, msg, args...)
+}
+
+// Warn logs a warning message to console
+func (c *ConsoleLogger) Warn(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	c.logWithCaller(WARN, file, line, msg, args...)
+}
+
+// Error logs an error message to console
+func (c *ConsoleLogger) Error(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	c.logWithCaller(ERROR, file, line, msg, args...)
+}
+
+// Fatal logs a fatal message to console and exits
+func (c *ConsoleLogger) Fatal(msg string, args ...any) {
+	_, file, line, _ := runtime.Caller(1)
+	c.logWithCaller(FATAL, file, line, msg, args...)
+	os.Exit(1)
+}
+
+func getShortFilePath(file string) string {
+	short := filepath.Base(file)
+	dir := filepath.Base(filepath.Dir(file))
+	if dir != "." && dir != "/" {
+		return dir + "/" + short
+	}
+	return short
+}
+
+func (l *FileLogger) logWithCaller(level LogLevel, file string, line int, msg string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if level < l.level {
+		return
+	}
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+	shortFile := getShortFilePath(file)
+	caller := fmt.Sprintf("%s:%d", shortFile, line)
+
+	var logMsg strings.Builder
+	logMsg.WriteString("[")
+	logMsg.WriteString(timestamp)
+	logMsg.WriteString("] [")
+	logMsg.WriteString(level.String())
+	logMsg.WriteString("] [")
+	logMsg.WriteString(caller)
+	logMsg.WriteString("] ")
+
+	if len(args) > 0 {
+		logMsg.WriteString(fmt.Sprintf(msg, args...))
+	} else {
+		logMsg.WriteString(msg)
+	}
+	logMsg.WriteString("\n")
+
+	if l.file == nil {
+		l.openLogFile()
+	}
+
+	if l.file != nil {
+		if _, err := l.file.WriteString(logMsg.String()); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to write to log file: %v\n", err)
+		}
+
+		if fi, err := l.file.Stat(); err == nil {
+			if fi.Size() > int64(l.maxFileSizeMB*1024*1024) {
+				l.rotateLog()
+			}
+		}
+	}
+}
+
+func (c *ConsoleLogger) logWithCaller(level LogLevel, file string, line int, msg string, args ...any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if level < c.level {
+		return
+	}
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+	shortFile := getShortFilePath(file)
+	caller := fmt.Sprintf("%s:%d", shortFile, line)
+
+	var logMsg strings.Builder
+	logMsg.WriteString("[")
+	logMsg.WriteString(timestamp)
+	logMsg.WriteString("] [")
+	if c.colored {
+		logMsg.WriteString(level.Color())
+	}
+	logMsg.WriteString(level.String())
+	if c.colored {
+		logMsg.WriteString(Reset)
+	}
+	logMsg.WriteString("] [")
+	logMsg.WriteString(caller)
+	logMsg.WriteString("] ")
+
+	if len(args) > 0 {
+		logMsg.WriteString(fmt.Sprintf(msg, args...))
+	} else {
+		logMsg.WriteString(msg)
+	}
+	logMsg.WriteString("\n")
+
+	fmt.Print(logMsg.String())
+}
+
+func (l *FileLogger) openLogFile() {
+	if l.file != nil {
+		l.file.Close()
+		l.file = nil
+	}
+
+	logPath := filepath.Join(l.logDir, l.baseFileName)
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
+		return
 	}
 
-	useColors := outputFile == nil
+	l.file = file
+}
 
-	if outputFile != nil {
-		logger.SetOutput(outputFile)
+func (l *FileLogger) rotateLog() {
+	if l.file == nil {
+		return
 	}
 
-	var newLoggerWithOptions = Logger{
-		logger:         logger,
-		flag:           flags,
-		prefix:         prefix,
-		outputFile:     outputFile,
-		rotationTime:   rotationTime,
-		rotationSize:   rotationSize,
-		compress:       options.Compress,
-		compressSuffix: compressSuffix,
-		useColors:      useColors,
+	l.file.Close()
+	l.file = nil
+
+	currentPath := filepath.Join(l.logDir, l.baseFileName)
+	timestamp := time.Now().Format("20060102-150405")
+	newPath := filepath.Join(l.logDir, fmt.Sprintf("%s.%s", l.baseFileName, timestamp))
+
+	if err := os.Rename(currentPath, newPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to rotate log file: %v\n", err)
 	}
 
-	return &newLoggerWithOptions
-}
-func (l *Logger) String() string {
-	var builder strings.Builder
+	go func(filePath string) {
+		compressedPath := filePath + ".gz"
+		err := compressFile(filePath, compressedPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to compress log file: %v\n", err)
+			return
+		}
 
-	builder.WriteString("Logger{level: ")
-	builder.WriteString(strconv.Itoa(l.flag))
-	builder.WriteString(", prefix: ")
-	builder.WriteString(l.prefix)
-	builder.WriteString(", rotationTime: ")
-	builder.WriteString(l.rotationTime.String())
-	builder.WriteString(", rotationSize: ")
-	builder.WriteString(strconv.FormatInt(l.rotationSize, 10))
-	builder.WriteString(", compress: ")
-	builder.WriteString(strconv.FormatBool(l.compress))
-	builder.WriteString(", compressSuffix: ")
-	builder.WriteString(l.compressSuffix)
-	builder.WriteString("}")
+		os.Remove(filePath)
+	}(newPath)
 
-	return builder.String()
+	l.openLogFile()
 }
 
-func (l Logger) Panic(s string) {
-	l.logger.Panicln(s)
-}
-func (l Logger) Printl(s string) {
-	l.logger.Println(s)
-}
-func (l Logger) Printf(s string, v ...any) {
-	l.logger.Printf(s, v...)
-}
-func (l Logger) Info(s string) {
-	l.logger.SetPrefix(prefixString(l.useColors, "Info: ", colorGreen))
+func compressFile(src, dst string) error {
 
-	l.logger.Output(2, s)
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
 
-	l.logger.SetPrefix(l.prefix)
-}
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
 
-func (l Logger) InfoF(s string, v ...any) {
-	l.logger.SetPrefix(prefixString(l.useColors, "Info: ", colorGreen))
-	l.logger.Output(2, fmt.Sprintf(s, v...))
-	l.logger.SetPrefix(l.prefix)
-}
-func (l Logger) Warn(s string) {
-	l.logger.SetPrefix(prefixString(l.useColors, "Warning: ", colorYellow))
-	l.logger.Output(2, s)
-	l.logger.SetPrefix(l.prefix)
-}
+	gzipWriter := gzip.NewWriter(destFile)
+	defer gzipWriter.Close()
 
-func (l Logger) WarnF(s string, v ...any) {
-	l.logger.SetPrefix(prefixString(l.useColors, "Warning: ", colorYellow))
-	l.logger.Output(2, fmt.Sprintf(s, v...))
-	l.logger.SetPrefix(l.prefix)
-
-}
-func (l Logger) Fatal(s string) {
-	l.logger.SetPrefix(prefixString(l.useColors, "Fatal: ", colorRed))
-	l.logger.Output(2, s)
-	os.Exit(1)
-	l.logger.SetPrefix(l.prefix)
-
-}
-func (l Logger) FatalF(s string, v ...any) {
-	l.logger.SetPrefix(prefixString(l.useColors, "Fatal: ", colorRed))
-	l.logger.Output(2, fmt.Sprintf(s, v...))
-	os.Exit(1)
-	l.logger.SetPrefix(l.prefix)
-
-}
-
-func prefixString(uc bool, prefix string, color string) string {
-	var builder strings.Builder
-	if uc {
-		builder.WriteString(color)
+	_, err = io.Copy(gzipWriter, sourceFile)
+	if err != nil {
+		return err
 	}
 
-	builder.WriteString(prefix)
-	if uc {
-		builder.WriteString(colorReset)
-	}
-	return builder.String()
-
+	return nil
 }

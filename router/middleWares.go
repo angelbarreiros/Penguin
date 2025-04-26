@@ -1,13 +1,17 @@
 package router
 
 import (
+	"angelotero/commonBackend/logger"
 	"angelotero/commonBackend/router/auth"
 	"angelotero/commonBackend/router/cors"
 	"context"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 func WithAuthMiddleWare(auth auth.PlainAuthInterface, hf handleFunc) handleFunc {
@@ -131,6 +135,111 @@ func queryParametersObligation(queryParameters []string) middlewareFunc {
 				}
 			}
 			hf(w, r)
+		}
+	}
+}
+
+type bucketOption func(*tokenBucket)
+type tokenBucket struct {
+	tokens        int32
+	lastTime      time.Time
+	mu            sync.Mutex
+	startingLimit int32
+	limitPerSec   float64
+}
+
+func WithCustomStartingLimit(limit int32) bucketOption {
+	return func(tb *tokenBucket) {
+		tb.startingLimit = limit
+		tb.tokens = limit
+	}
+}
+
+func WithCustomLimitPerSecond(limit float64) bucketOption {
+	return func(tb *tokenBucket) {
+		tb.limitPerSec = limit
+	}
+}
+
+func WithRateLimiting(hf handleFunc, opts ...bucketOption) handleFunc {
+	return rateLimiting(opts...)(hf)
+}
+
+func rateLimiting(opts ...bucketOption) middlewareFunc {
+	var (
+		tokenBuckets sync.Map
+	)
+
+	return func(hf handleFunc) handleFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			ip := r.Header.Get("X-Real-IP")
+			if ip == "" {
+				ip = r.Header.Get("X-Forwarded-For")
+			}
+			if ip == "" {
+				ip = r.RemoteAddr
+			}
+
+			bucketKey := ip + ":" + r.URL.Path
+			now := time.Now()
+
+			bucket := &tokenBucket{
+				tokens:        30,
+				startingLimit: 30,
+				limitPerSec:   1.0,
+				lastTime:      now,
+			}
+
+			for _, opt := range opts {
+				opt(bucket)
+			}
+
+			b, _ := tokenBuckets.LoadOrStore(bucketKey, bucket)
+			currentBucket := b.(*tokenBucket)
+
+			currentBucket.mu.Lock()
+			defer currentBucket.mu.Unlock()
+
+			elapsed := now.Sub(currentBucket.lastTime).Seconds()
+			tokensToAdd := elapsed * currentBucket.limitPerSec
+			tokensSinceLastRequest := int32(math.Floor(tokensToAdd))
+			currentBucket.tokens = min(currentBucket.startingLimit, currentBucket.tokens+tokensSinceLastRequest)
+			currentBucket.lastTime = now
+
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(int(currentBucket.startingLimit)))
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(int(currentBucket.tokens)))
+
+			if currentBucket.tokens > 0 {
+				currentBucket.tokens--
+				hf(w, r)
+			} else {
+				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+		}
+	}
+}
+func WithLoggingMiddleware(hf handleFunc) handleFunc {
+	return loggingMiddleware()(hf)
+}
+
+func loggingMiddleware() middlewareFunc {
+	return func(hf handleFunc) handleFunc {
+		var l = logger.GetConsoleLogger()
+		return func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			hf(w, r)
+			duration := time.Since(start)
+			method := r.Method
+			path := r.URL.Path
+			ip := r.Header.Get("X-Real-IP")
+			if ip == "" {
+				ip = r.Header.Get("X-Forwarded-For")
+			}
+			if ip == "" {
+				ip = r.RemoteAddr
+			}
+			l.Info("Method: %s, Path: %s, IP: %s, Duration: %s", method, path, ip, duration)
 		}
 	}
 }

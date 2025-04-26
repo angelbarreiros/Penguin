@@ -5,8 +5,6 @@ import (
 	"log"
 	"testing"
 	"time"
-
-	"github.com/fortytw2/leaktest"
 )
 
 type functionSum struct {
@@ -34,6 +32,5 @@ func BenchmarkCronEngineJobs(b *testing.B) {
 
 	}
 	defer sch.Stop()
-	defer leaktest.Check(b)()
 
 }

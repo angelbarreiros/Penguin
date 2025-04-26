@@ -1,93 +1,57 @@
 package drivers
 
 import (
-	"angelotero/commonBackend/dbhelper"
 	"database/sql"
-	"fmt"
 
-	"github.com/jmoiron/sqlx"
+	"github.com/blockloop/scan/v2"
 )
 
 type PostgresDriver struct {
-	dBConexion *sqlx.DB
-	dBPlug     *dbhelper.DBPlug
+	dBConexion *sql.DB
+	dBPlug     *DBPlug
 }
 
-func (p *PostgresDriver) SetDBPlug(plug *dbhelper.DBPlug) {
+func (p *PostgresDriver) Connect(opts ...ConnOption) error {
+	db, err := p.dBPlug.Connect(opts...)
+	if err != nil {
+		return err
+	}
+	p.dBConexion = db
+
+	return nil
+}
+
+func (p *PostgresDriver) Execute(query string, args any) (sql.Result, error) {
+	return p.dBConexion.Exec(query, args)
+}
+
+func (p *PostgresDriver) Query(query string, args any) (*sql.Rows, error) {
+	return p.dBConexion.Query(query, args)
+}
+
+func (p *PostgresDriver) Prepare(query string) (*sql.Stmt, error) {
+	return p.dBConexion.Prepare(query)
+}
+
+func (p *PostgresDriver) SetDBPlug(plug *DBPlug) {
 	p.dBPlug = plug
 }
 
-func (p PostgresDriver) GetConexion() *sqlx.DB {
+func (p *PostgresDriver) GetConexion() *sql.DB {
 	return p.dBConexion
 }
 
-func (p *PostgresDriver) Connect() error {
-	var err error
-	rawDB, err := p.dBPlug.Connect()
-	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
-	}
-	p.dBConexion = sqlx.NewDb(rawDB, "postgres")
-	return nil
+func (p *PostgresDriver) ScanRow(dest any, rows *sql.Rows) error {
+	return scan.Row(dest, rows)
+}
+
+func (p *PostgresDriver) ScanRows(dest any, rows *sql.Rows) error {
+	return scan.Rows(dest, rows)
 }
 
 func (p *PostgresDriver) Close() error {
 	if p.dBConexion != nil {
 		return p.dBConexion.Close()
 	}
-	return fmt.Errorf("no connection to close")
-}
-func (p PostgresDriver) Select(dest interface{}, query string, args ...interface{}) error {
-	if p.dBConexion == nil {
-		return fmt.Errorf("no connection to execute query")
-	}
-	return p.dBConexion.Select(dest, query, args...)
-}
-
-func (p PostgresDriver) Get(dest interface{}, query string, args ...interface{}) error {
-	if p.dBConexion == nil {
-		return fmt.Errorf("no connection to execute query")
-	}
-	return p.dBConexion.Get(dest, query, args...)
-}
-
-func (p PostgresDriver) Insert(query string, args ...interface{}) (sql.Result, error) {
-	if p.dBConexion == nil {
-		return nil, fmt.Errorf("no connection to execute query")
-	}
-	return p.dBConexion.Exec(query, args...)
-}
-
-func (p PostgresDriver) Update(query string, args ...interface{}) (sql.Result, error) {
-	if p.dBConexion == nil {
-		return nil, fmt.Errorf("no connection to execute query")
-	}
-	return p.dBConexion.Exec(query, args...)
-}
-
-func (p PostgresDriver) Delete(query string, args ...interface{}) (sql.Result, error) {
-	if p.dBConexion == nil {
-		return nil, fmt.Errorf("no connection to execute query")
-	}
-	return p.dBConexion.Exec(query, args...)
-}
-func (p PostgresDriver) Execute(query string, args ...interface{}) (sql.Result, error) {
-	if p.dBConexion == nil {
-		return nil, fmt.Errorf("no connection to execute query")
-	}
-	return p.dBConexion.Exec(query, args...)
-}
-
-func (p PostgresDriver) Query(query string, args ...interface{}) (*sqlx.Rows, error) {
-	if p.dBConexion == nil {
-		return nil, fmt.Errorf("no connection to execute query")
-	}
-	return p.dBConexion.Queryx(query, args...)
-}
-
-func (p PostgresDriver) Prepare(query string) (*sqlx.Stmt, error) {
-	if p.dBConexion == nil {
-		return nil, fmt.Errorf("no connection to prepare statement")
-	}
-	return p.dBConexion.Preparex(query)
+	return nil
 }
