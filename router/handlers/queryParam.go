@@ -71,7 +71,7 @@ func GetUUIDQueryParam(queryParameter string, r *http.Request) Optional[uuid.UUI
 	return Optional[uuid.UUID]{value: idUUID, present: true, hasErrors: nil}
 }
 func GetTimeQueryParam(queryParameter string, r *http.Request) Optional[time.Time] {
-	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
+	var id string = strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
 		return Optional[time.Time]{present: false, hasErrors: nil}
 	}

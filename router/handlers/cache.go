@@ -68,7 +68,7 @@ func (c *cleanerCache) Set(key string, i CacheItem) {
 }
 func (c *cleanerCache) Get(w http.ResponseWriter, key string) (CacheItem, bool) {
 	if item, ok := c.cache.Load(key); ok {
-		cacheItem := item.(CacheItem)
+		var cacheItem CacheItem = item.(CacheItem)
 		if w != nil {
 			w.Header().Set("Cache-Status", "HIT")
 
@@ -107,7 +107,7 @@ func GenerateCacheKey(r *http.Request) string {
 		sb.WriteString(strings.Join(params, "&"))
 	}
 
-	relevantHeaders := []string{"Accept", "Accept-Language", "Authorization"}
+	var relevantHeaders []string = []string{"Accept", "Accept-Language", "Authorization"}
 	for _, header := range relevantHeaders {
 		if value := r.Header.Get(header); value != "" {
 			sb.WriteString("#")

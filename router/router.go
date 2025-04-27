@@ -52,7 +52,8 @@ func (r *router) NewRoute(route Route) {
 }
 func (r *router) methodHandler(path string) handleFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		method := HTTPMethod(req.Method)
+
+		var method HTTPMethod = HTTPMethod(req.Method)
 		handlers := r.routes[path]
 
 		var allowedMethods []string
@@ -72,7 +73,7 @@ func (r *router) methodHandler(path string) handleFunc {
 		}
 
 		if req.Method == http.MethodHead {
-			rec := &responseRecorder{ResponseWriter: w}
+			var rec *responseRecorder = &responseRecorder{ResponseWriter: w}
 			handler(rec, req)
 			return
 		}

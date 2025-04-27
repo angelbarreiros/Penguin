@@ -12,11 +12,13 @@ type PostgresDriver struct {
 }
 
 func (p *PostgresDriver) Connect(opts ...ConnOption) error {
-	db, err := p.dBPlug.Connect(opts...)
+	var dBConexion *sql.DB
+	var err error
+	dBConexion, err = p.dBPlug.Connect(opts...)
 	if err != nil {
 		return err
 	}
-	p.dBConexion = db
+	p.dBConexion = dBConexion
 
 	return nil
 }

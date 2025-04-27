@@ -7,6 +7,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -172,7 +173,7 @@ func rateLimiting(opts ...bucketOption) middlewareFunc {
 
 	return func(hf handleFunc) handleFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			ip := r.Header.Get("X-Real-IP")
+			var ip string = r.Header.Get("X-Real-IP")
 			if ip == "" {
 				ip = r.Header.Get("X-Forwarded-For")
 			}
@@ -180,10 +181,10 @@ func rateLimiting(opts ...bucketOption) middlewareFunc {
 				ip = r.RemoteAddr
 			}
 
-			bucketKey := ip + ":" + r.URL.Path
-			now := time.Now()
+			var bucketKey string = ip + ":" + r.URL.Path
+			var now time.Time = time.Now()
 
-			bucket := &tokenBucket{
+			var bucket *tokenBucket = &tokenBucket{
 				tokens:        30,
 				startingLimit: 30,
 				limitPerSec:   1.0,
@@ -200,9 +201,9 @@ func rateLimiting(opts ...bucketOption) middlewareFunc {
 			currentBucket.mu.Lock()
 			defer currentBucket.mu.Unlock()
 
-			elapsed := now.Sub(currentBucket.lastTime).Seconds()
-			tokensToAdd := elapsed * currentBucket.limitPerSec
-			tokensSinceLastRequest := int32(math.Floor(tokensToAdd))
+			var elapsed float64 = now.Sub(currentBucket.lastTime).Seconds()
+			var tokensToAdd float64 = elapsed * currentBucket.limitPerSec
+			var tokensSinceLastRequest int32 = int32(math.Floor(tokensToAdd))
 			currentBucket.tokens = min(currentBucket.startingLimit, currentBucket.tokens+tokensSinceLastRequest)
 			currentBucket.lastTime = now
 
@@ -227,12 +228,12 @@ func loggingMiddleware() middlewareFunc {
 	return func(hf handleFunc) handleFunc {
 		var l = logger.GetConsoleLogger()
 		return func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
+			var start time.Time = time.Now()
 			hf(w, r)
-			duration := time.Since(start)
-			method := r.Method
-			path := r.URL.Path
-			ip := r.Header.Get("X-Real-IP")
+			var duration time.Duration = time.Since(start)
+			var method string = r.Method
+			var path string = r.URL.Path
+			var ip string = r.Header.Get("X-Real-IP")
 			if ip == "" {
 				ip = r.Header.Get("X-Forwarded-For")
 			}
@@ -241,5 +242,17 @@ func loggingMiddleware() middlewareFunc {
 			}
 			l.Info("Method: %s, Path: %s, IP: %s, Duration: %s", method, path, ip, duration)
 		}
+	}
+}
+func WithRecovery(hf handleFunc) handleFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				logger.GetConsoleLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
+				logger.GetFileLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		hf(w, r)
 	}
 }

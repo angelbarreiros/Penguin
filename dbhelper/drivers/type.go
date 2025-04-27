@@ -47,7 +47,7 @@ func (db *DBPlug) Connect(opts ...ConnOption) (*sql.DB, error) {
 	sb.WriteString(db.database)
 	sb.WriteString(" sslmode=disable")
 
-	connStr := sb.String()
+	var connStr string = sb.String()
 
 	var conn *sql.DB
 	var err error
@@ -65,7 +65,7 @@ func (db *DBPlug) Connect(opts ...ConnOption) (*sql.DB, error) {
 			}
 		}
 		log.Printf("Connection string: %s, Error: %v", connStr, err)
-		waitTime := time.Duration(1<<i) * time.Second
+		var waitTime time.Duration = time.Duration(1<<i) * time.Second
 		log.Printf("Retrying connection to database in %v seconds...", waitTime.Seconds())
 		time.Sleep(waitTime)
 	}

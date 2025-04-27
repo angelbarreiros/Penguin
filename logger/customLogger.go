@@ -131,7 +131,7 @@ func (l *FileLogger) Configure(logDir string, baseFileName string, maxFileSizeMB
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	changed := false
+	var changed bool = false
 
 	if logDir != "" && logDir != l.logDir {
 		l.logDir = logDir
@@ -249,8 +249,8 @@ func (c *ConsoleLogger) Fatal(msg string, args ...any) {
 }
 
 func getShortFilePath(file string) string {
-	short := filepath.Base(file)
-	dir := filepath.Base(filepath.Dir(file))
+	var short string = filepath.Base(file)
+	var dir string = filepath.Base(filepath.Dir(file))
 	if dir != "." && dir != "/" {
 		return dir + "/" + short
 	}
@@ -265,9 +265,9 @@ func (l *FileLogger) logWithCaller(level LogLevel, file string, line int, msg st
 		return
 	}
 
-	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-	shortFile := getShortFilePath(file)
-	caller := fmt.Sprintf("%s:%d", shortFile, line)
+	var timestamp string = time.Now().Format("2006-01-02 15:04:05.000")
+	var shortFile string = getShortFilePath(file)
+	var caller string = fmt.Sprintf("%s:%d", shortFile, line)
 
 	var logMsg strings.Builder
 	logMsg.WriteString("[")
@@ -310,9 +310,9 @@ func (c *ConsoleLogger) logWithCaller(level LogLevel, file string, line int, msg
 		return
 	}
 
-	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-	shortFile := getShortFilePath(file)
-	caller := fmt.Sprintf("%s:%d", shortFile, line)
+	var timestamp string = time.Now().Format("2006-01-02 15:04:05.000")
+	var shortFile string = getShortFilePath(file)
+	var caller string = fmt.Sprintf("%s:%d", shortFile, line)
 
 	var logMsg strings.Builder
 	logMsg.WriteString("[")
@@ -363,9 +363,9 @@ func (l *FileLogger) rotateLog() {
 	l.file.Close()
 	l.file = nil
 
-	currentPath := filepath.Join(l.logDir, l.baseFileName)
-	timestamp := time.Now().Format("20060102-150405")
-	newPath := filepath.Join(l.logDir, fmt.Sprintf("%s.%s", l.baseFileName, timestamp))
+	var currentPath string = filepath.Join(l.logDir, l.baseFileName)
+	var timestamp string = time.Now().Format("20060102-150405")
+	var newPath string = filepath.Join(l.logDir, fmt.Sprintf("%s.%s", l.baseFileName, timestamp))
 
 	if err := os.Rename(currentPath, newPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to rotate log file: %v\n", err)
@@ -399,7 +399,7 @@ func compressFile(src, dst string) error {
 	}
 	defer destFile.Close()
 
-	gzipWriter := gzip.NewWriter(destFile)
+	var gzipWriter *gzip.Writer = gzip.NewWriter(destFile)
 	defer gzipWriter.Close()
 
 	_, err = io.Copy(gzipWriter, sourceFile)

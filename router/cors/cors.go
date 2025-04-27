@@ -38,7 +38,7 @@ func (c *CORSConfig) OptionsPassthrough() bool {
 }
 
 func NewCORSConfig(options ...func(*CORSConfig)) *CORSConfig {
-	config := &CORSConfig{
+	var config *CORSConfig = &CORSConfig{
 		allowedOrigins: []string{},
 
 		allowedHeaders: []string{

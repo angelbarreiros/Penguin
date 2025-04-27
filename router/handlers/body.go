@@ -9,7 +9,7 @@ import (
 )
 
 func DeserializeBodyWithLimit(r *http.Request, dto any, maxBytes int64) error {
-	body := http.MaxBytesReader(nil, r.Body, maxBytes)
+	var body io.ReadCloser = http.MaxBytesReader(nil, r.Body, maxBytes)
 	defer body.Close()
 
 	bytes, err := io.ReadAll(body)
