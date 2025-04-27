@@ -17,15 +17,11 @@ func handlerUser(w http.ResponseWriter, r *http.Request) {
 }
 
 type customClaims struct {
-	Id    uint64   `json:"id"`
-	Roles []string `json:"roles"`
+	Id uint64 `json:"id"`
+	auth.RBACClaims
 	jwt.RegisteredClaims
 }
 
-func (c *customClaims) GetRoles() []string {
-	return c.Roles
-
-}
 func main() {
 	file, _ := os.Open("private_key.pem")
 	r := router.Router()
@@ -34,7 +30,7 @@ func main() {
 	r.NewRoute(router.Route{
 		Path:   "/",
 		Method: "GET",
-		Handler: router.WithAuthAndRBAC(auth, []string{"admin", "user"},
+		Handler: router.WithAuthAndRBAC(auth, []string{"admin"},
 			router.WithRateLimiting(
 				router.WithLoggingMiddleware(
 					router.WithRecovery(handlerUser)))),

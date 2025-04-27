@@ -22,10 +22,19 @@ type PlainAuthInterface interface {
 	GetTimeout() time.Duration
 	GetContextKey() any
 }
-type RBACClaims interface {
+type rBACClaimsInterface interface {
 	jwt.Claims
 	GetRoles() []string
 }
+type RBACClaims struct {
+	Roles []string `json:"roles"`
+	jwt.RegisteredClaims
+}
+
+func (c *RBACClaims) GetRoles() []string {
+	return c.Roles
+}
+
 type RBACAuthInterface interface {
 	Authorize(r *http.Request) (bool, error)
 	GetUser(r *http.Request) (any, error)
