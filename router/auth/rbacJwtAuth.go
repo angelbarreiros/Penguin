@@ -30,11 +30,11 @@ type jwtRbacAuthOptions struct {
 var jwtRbacAuthInstance *RBACJwtAuth
 var jwtRbacOnce sync.Once
 
-func NewJwtAuthWithRbac(secret *os.File, claimsType jwt.Claims, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
+func NewJwtAuthWithRbac(secret *os.File, claimsType RBACClaims, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
 	return initJwtAuthRbac(secret, claimsType, options...)
 }
 
-func NewSingletonJwtAuthWithRbac(secret *os.File, claimsType jwt.Claims, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
+func NewSingletonJwtAuthWithRbac(secret *os.File, claimsType RBACClaims, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
 	jwtRbacOnce.Do(func() { initJwtAuthRbacInstance(secret, claimsType, options...) })
 	return jwtRbacAuthInstance
 }
@@ -122,14 +122,10 @@ func JwtAuthRbacWithCustomContextKey(key any) jwtRbacOptionsFunc {
 	}
 }
 
-func initJwtAuthRbacInstance(secret *os.File, claimsType jwt.Claims, options ...jwtRbacOptionsFunc) {
+func initJwtAuthRbacInstance(secret *os.File, claimsType RBACClaims, options ...jwtRbacOptionsFunc) {
 	jwtRbacAuthInstance = initJwtAuthRbac(secret, claimsType, options...)
 }
-func initJwtAuthRbac(secret *os.File, claimsType jwt.Claims, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
-	var rbaclaims, ok = claimsType.(RBACClaims)
-	if !ok {
-		panic("claimsType must implement RBACClaims interface")
-	}
+func initJwtAuthRbac(secret *os.File, claimsType RBACClaims, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
 	var bytes []byte
 	var err error
 	bytes, err = io.ReadAll(secret)
@@ -145,7 +141,7 @@ func initJwtAuthRbac(secret *os.File, claimsType jwt.Claims, options ...jwtRbacO
 
 	var jwtAuth *RBACJwtAuth = &RBACJwtAuth{
 		authKey:    key,
-		claimsType: rbaclaims,
+		claimsType: claimsType,
 		options: &jwtRbacAuthOptions{
 			Timeout:    time.Duration(DefaultContextTimeout),
 			ContextKey: DefaultContextKey,
