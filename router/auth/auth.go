@@ -26,6 +26,12 @@ type rBACClaimsInterface interface {
 	jwt.Claims
 	GetRoles() []string
 }
+type plainClaimsInterface interface {
+	jwt.Claims
+}
+type PlainClaims struct {
+	jwt.RegisteredClaims
+}
 type RBACClaims struct {
 	Roles []string `json:"roles"`
 	jwt.RegisteredClaims

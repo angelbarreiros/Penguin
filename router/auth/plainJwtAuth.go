@@ -16,7 +16,7 @@ import (
 type jwtOptionsFunc func(*JwtAuth)
 type JwtAuth struct {
 	authKey     *ecdsa.PrivateKey
-	claimsType  jwt.Claims
+	claimsType  plainClaimsInterface
 	tokenString string
 	options     *jwtAuthOptions
 }
@@ -28,11 +28,11 @@ type jwtAuthOptions struct {
 var jwtAuthInstance *JwtAuth
 var jwtOnce sync.Once
 
-func NewJwtAuth(secret *os.File, claimsType jwt.Claims, options ...jwtOptionsFunc) *JwtAuth {
+func NewJwtAuth(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
 	return initJwtAuth(secret, claimsType, options...)
 }
 
-func NewSingletonJwtAuth(secret *os.File, claimsType jwt.Claims, options ...jwtOptionsFunc) *JwtAuth {
+func NewSingletonJwtAuth(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
 	jwtOnce.Do(func() { initJwtAuthInstance(secret, claimsType, options...) })
 	return jwtAuthInstance
 }
@@ -107,10 +107,10 @@ func WithCustomContextKey(key any) jwtRbacOptionsFunc {
 	}
 }
 
-func initJwtAuthInstance(secret *os.File, claimsType jwt.Claims, options ...jwtOptionsFunc) {
+func initJwtAuthInstance(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) {
 	jwtAuthInstance = initJwtAuth(secret, claimsType, options...)
 }
-func initJwtAuth(secret *os.File, claimsType jwt.Claims, options ...jwtOptionsFunc) *JwtAuth {
+func initJwtAuth(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
 	var bytes []byte
 	var err error
 	bytes, err = io.ReadAll(secret)
