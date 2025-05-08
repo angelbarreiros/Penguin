@@ -119,7 +119,7 @@ func initJwtAuth(secret *os.File, claimsType plainClaimsInterface, options ...jw
 	}
 
 	var key *ecdsa.PrivateKey
-	key, err = loadPrivateKeyFromFile(bytes)
+	key, err = LoadPrivateKeyFromFile(bytes)
 	if err != nil {
 		panic("cannot load jwt secret file" + err.Error())
 	}

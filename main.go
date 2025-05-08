@@ -2,34 +2,24 @@ package main
 
 import (
 	"angelotero/commonBackend/router"
-	"angelotero/commonBackend/router/auth"
+	"angelotero/commonBackend/router/handlers"
 	"net/http"
-	"os"
 )
 
 func handlerUser(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Hello, World!"))
-	panic("Error")
+	var i18n = handlers.GetI18nInstance(handlers.SetDefaultLocale("en"), handlers.SetDirectory("i18n"))
+	var translated = i18n.Translate("INTERNAL_ERROR", r)
 
-}
+	w.Write([]byte(translated))
 
-type customClaims struct {
-	Id uint64 `json:"id"`
-	auth.PlainClaims
 }
 
 func main() {
-	file, _ := os.Open("private_key.pem")
 	r := router.Router()
-	var claims = new(customClaims)
-	var auth = auth.NewSingletonJwtAuth(file, claims)
 	r.NewRoute(router.Route{
-		Path:   "/",
-		Method: "GET",
-		Handler: router.WithAuthMiddleWare(auth,
-			router.WithRateLimiting(
-				router.WithLoggingMiddleware(
-					router.WithRecovery(handlerUser)))),
+		Path:             "/",
+		Method:           "GET",
+		Handler:          handlerUser,
 		AditionalMethods: []router.HTTPMethod{router.HEAD, router.OPTIONS},
 	})
 

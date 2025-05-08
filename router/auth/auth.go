@@ -49,7 +49,7 @@ type RBACAuthInterface interface {
 	GetContextKey() any
 }
 
-func loadPrivateKeyFromFile(keyPem []byte) (*ecdsa.PrivateKey, error) {
+func LoadPrivateKeyFromFile(keyPem []byte) (*ecdsa.PrivateKey, error) {
 
 	block, _ := pem.Decode(keyPem)
 	if block == nil || block.Type != "EC PRIVATE KEY" {

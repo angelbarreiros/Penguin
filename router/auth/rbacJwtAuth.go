@@ -134,7 +134,7 @@ func initJwtAuthRbac(secret *os.File, claimsType rBACClaimsInterface, options ..
 	}
 
 	var key *ecdsa.PrivateKey
-	key, err = loadPrivateKeyFromFile(bytes)
+	key, err = LoadPrivateKeyFromFile(bytes)
 	if err != nil {
 		panic("cannot load jwt secret file" + err.Error())
 	}
