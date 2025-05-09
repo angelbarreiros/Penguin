@@ -2,11 +2,13 @@ package router
 
 import (
 	"angelotero/commonBackend/logger"
+	"angelotero/commonBackend/router"
 	"angelotero/commonBackend/router/auth"
 	"angelotero/commonBackend/router/cors"
 	"context"
 	"math"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -14,6 +16,9 @@ import (
 	"sync"
 	"time"
 )
+
+type middlewareFunc func(router.HandleFunc) router.HandleFunc
+type handleFunc = router.HandleFunc
 
 func WithAuthMiddleWare(auth auth.PlainAuthInterface, hf handleFunc) handleFunc {
 	return authMiddleWareFunc(auth)(hf)
@@ -149,14 +154,14 @@ type tokenBucket struct {
 	limitPerSec   float64
 }
 
-func WithCustomStartingLimit(limit int32) bucketOption {
+func RateLimitOptStartingLimit(limit int32) bucketOption {
 	return func(tb *tokenBucket) {
 		tb.startingLimit = limit
 		tb.tokens = limit
 	}
 }
 
-func WithCustomLimitPerSecond(limit float64) bucketOption {
+func RateLimitOptLimitPerSecond(limit float64) bucketOption {
 	return func(tb *tokenBucket) {
 		tb.limitPerSec = limit
 	}
@@ -256,5 +261,50 @@ func handlePanic(w http.ResponseWriter) {
 		logger.GetConsoleLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
 		logger.GetFileLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+func WithFeatureEnable(env string, hf handleFunc) handleFunc {
+	return featureEnabled(env)(hf)
+}
+func featureEnabled(env string) middlewareFunc {
+	return func(hf handleFunc) handleFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			var osEnvEnabled string = os.Getenv(env)
+			var isEnabled, err = strconv.ParseBool(osEnvEnabled)
+			if err != nil {
+				http.Error(w, "Feature not enabled", http.StatusForbidden)
+				return
+			}
+			if !isEnabled {
+				http.Error(w, "Feature not enabled", http.StatusForbidden)
+				return
+			}
+			hf(w, r)
+		}
+	}
+}
+
+func WithFeatureEnabledByHeader(header string, hf handleFunc) handleFunc {
+	return featureEnabledByHeader(header)(hf)
+}
+func featureEnabledByHeader(header string) middlewareFunc {
+	return func(hf handleFunc) handleFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			var headerValue string = r.Header.Get(header)
+			if headerValue == "" {
+				http.Error(w, "Feature not enabled", http.StatusForbidden)
+				return
+			}
+			var isEnabled, err = strconv.ParseBool(headerValue)
+			if err != nil {
+				http.Error(w, "Feature not enabled", http.StatusForbidden)
+				return
+			}
+			if !isEnabled {
+				http.Error(w, "Feature not enabled", http.StatusForbidden)
+				return
+			}
+			hf(w, r)
+		}
 	}
 }
