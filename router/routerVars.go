@@ -1,5 +1,7 @@
 package router
 
+import "sync"
+
 type HTTPMethod string
 
 const (
@@ -11,3 +13,6 @@ const (
 	OPTIONS HTTPMethod = "OPTIONS"
 	HEAD    HTTPMethod = "HEAD"
 )
+
+var routerInstance *router
+var routerOnce sync.Once
