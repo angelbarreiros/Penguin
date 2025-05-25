@@ -1,9 +1,10 @@
 package middlewares
 
 import (
-	"angelotero/commonBackend/logger"
 	"net/http"
 	"runtime/debug"
+
+	"github.com/angelbarreiros/Penguin/logger"
 )
 
 func WithRecovery(hf handleFunc) handleFunc {

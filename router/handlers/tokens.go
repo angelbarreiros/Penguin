@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"angelotero/commonBackend/router/auth"
 	"fmt"
 
+	"github.com/angelbarreiros/Penguin/router/auth"
 	"github.com/golang-jwt/jwt/v5"
 )
 

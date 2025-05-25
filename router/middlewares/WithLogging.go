@@ -1,9 +1,10 @@
 package middlewares
 
 import (
-	"angelotero/commonBackend/logger"
 	"net/http"
 	"time"
+
+	"github.com/angelbarreiros/Penguin/logger"
 )
 
 func WithLogging(hf handleFunc) handleFunc {

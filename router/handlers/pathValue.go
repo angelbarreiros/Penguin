@@ -1,11 +1,11 @@
 package handlers
 
 import (
-	routerErrors "angelotero/commonBackend/router/errors"
 	"net/http"
 	"strconv"
 	"strings"
 
+	routerErrors "github.com/angelbarreiros/Penguin/router/errors"
 	"github.com/google/uuid"
 )
 

@@ -1,11 +1,12 @@
 package middlewares
 
 import (
-	"angelotero/commonBackend/router/cors"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/angelbarreiros/Penguin/router/cors"
 )
 
 func WithCors(corrsConfig *cors.CORSConfig, hf handleFunc) handleFunc {

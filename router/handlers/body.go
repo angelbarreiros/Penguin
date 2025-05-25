@@ -1,11 +1,12 @@
 package handlers
 
 import (
-	routerErrors "angelotero/commonBackend/router/errors"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+
+	routerErrors "github.com/angelbarreiros/Penguin/router/errors"
 )
 
 func DeserializeBodyWithLimit(r *http.Request, dto any, maxBytes int64) error {

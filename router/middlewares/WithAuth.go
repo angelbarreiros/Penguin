@@ -1,9 +1,10 @@
 package middlewares
 
 import (
-	"angelotero/commonBackend/router/auth"
 	"context"
 	"net/http"
+
+	"github.com/angelbarreiros/Penguin/router/auth"
 )
 
 func WithAuthMiddleWare(auth auth.PlainAuthInterface, hf handleFunc) handleFunc {

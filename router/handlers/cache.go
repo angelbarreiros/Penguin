@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"angelotero/commonBackend/scheduler"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/angelbarreiros/Penguin/scheduler"
 )
 
 type cleaner struct {

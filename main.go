@@ -1,9 +1,10 @@
 package main
 
 import (
-	"angelotero/commonBackend/router"
-	"angelotero/commonBackend/router/handlers"
 	"net/http"
+
+	"github.com/angelbarreiros/Penguin/router"
+	"github.com/angelbarreiros/Penguin/router/handlers"
 )
 
 func handlerUser(w http.ResponseWriter, r *http.Request) {

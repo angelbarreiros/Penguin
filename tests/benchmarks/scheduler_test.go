@@ -1,10 +1,11 @@
 package benchmarks
 
 import (
-	cronengine "angelotero/commonBackend/scheduler"
 	"log"
 	"testing"
 	"time"
+
+	"github.com/angelbarreiros/Penguin/scheduler"
 )
 
 type functionSum struct {
@@ -18,10 +19,10 @@ func (f functionSum) Execute() []any {
 }
 
 func BenchmarkCronEngineJobs(b *testing.B) {
-	var sch *cronengine.Scheduler = cronengine.StartScheduler()
+	var sch *scheduler.Scheduler = scheduler.StartScheduler()
 	var functionSum = functionSum{a: 1, b: 2}
 	for b.Loop() {
-		var job, ch = cronengine.JobFunction(functionSum).WithReturnChannel()
+		var job, ch = scheduler.JobFunction(functionSum).WithReturnChannel()
 		var _, err = sch.ScheduleJob(time.Now().Add(1*time.Second), job)
 		if err != nil {
 			b.Error(err)
