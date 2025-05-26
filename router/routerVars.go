@@ -14,5 +14,5 @@ const (
 	HEAD    HTTPMethod = "HEAD"
 )
 
-var routerInstance *router
+var routerInstance *Router
 var routerOnce sync.Once

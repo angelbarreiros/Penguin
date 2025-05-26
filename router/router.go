@@ -8,16 +8,16 @@ import (
 
 type HandleFunc func(http.ResponseWriter, *http.Request)
 
-type router struct {
+type Router struct {
 	mux    *http.ServeMux
 	routes map[string]map[HTTPMethod]HandleFunc
 }
 
-func (r *router) StartServer(s string) {
+func (r *Router) StartServer(s string) {
 	panic(http.ListenAndServe(s, r.mux))
 }
 
-func Router() *router {
+func InitRouter() *Router {
 	routerOnce.Do(initRouter)
 	return routerInstance
 }
@@ -29,7 +29,7 @@ type Route struct {
 	AditionalMethods []HTTPMethod
 }
 
-func (r *router) NewRoute(route Route) {
+func (r *Router) NewRoute(route Route) {
 	if r.routes[route.Path] == nil {
 		r.routes[route.Path] = make(map[HTTPMethod]HandleFunc)
 		r.mux.HandleFunc(route.Path, r.methodHandler(route.Path))
@@ -48,7 +48,7 @@ func (r *router) NewRoute(route Route) {
 		r.routes[route.Path][method] = route.Handler
 	}
 }
-func (r *router) methodHandler(path string) HandleFunc {
+func (r *Router) methodHandler(path string) HandleFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 
 		var method HTTPMethod = HTTPMethod(req.Method)
@@ -90,7 +90,7 @@ func (rec *responseRecorder) Write(b []byte) (int, error) {
 
 func initRouter() {
 	if nil == routerInstance {
-		routerInstance = &router{
+		routerInstance = &Router{
 			mux:    http.NewServeMux(),
 			routes: make(map[string]map[HTTPMethod]HandleFunc),
 		}
