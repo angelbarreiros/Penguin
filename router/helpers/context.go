@@ -1,11 +1,19 @@
 package helpers
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
-func GetValue[T any](r *http.Request, key string) T {
+func GetContextValue[T any](r *http.Request, key string) (T, error) {
 	var value T
-	if v, ok := r.Context().Value(key).(T); ok {
-		value = v
+	v := r.Context().Value(key)
+	if v == nil {
+		return value, fmt.Errorf("key %q not found in context", key)
 	}
-	return value
+	val, ok := v.(T)
+	if !ok {
+		return value, fmt.Errorf("value for key %q is not of expected type %T", key, value)
+	}
+	return val, nil
 }
