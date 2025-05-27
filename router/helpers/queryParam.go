@@ -88,3 +88,11 @@ func GetTimeQueryParam(queryParameter string, r *http.Request) Optional[time.Tim
 
 	return Optional[time.Time]{value: parsedTime, present: true, hasErrors: nil}
 }
+
+func GetStringQueryParam(queryParameter string, r *http.Request) Optional[string] {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
+	if id == "" {
+		return Optional[string]{present: false, hasErrors: nil}
+	}
+	return Optional[string]{value: id, present: true, hasErrors: nil}
+}
