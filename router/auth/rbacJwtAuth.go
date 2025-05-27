@@ -3,9 +3,7 @@ package auth
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +28,11 @@ type jwtRbacAuthOptions struct {
 var jwtRbacAuthInstance *RBACJwtAuth
 var jwtRbacOnce sync.Once
 
-func NewJwtAuthWithRbac(secret *os.File, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
+func NewJwtAuthWithRbac(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
 	return initJwtAuthRbac(secret, claimsType, options...)
 }
 
-func NewSingletonJwtAuthWithRbac(secret *os.File, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
+func NewSingletonJwtAuthWithRbac(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
 	jwtRbacOnce.Do(func() { initJwtAuthRbacInstance(secret, claimsType, options...) })
 	return jwtRbacAuthInstance
 }
@@ -122,25 +120,12 @@ func JwtAuthRbacWithCustomContextKey(key any) jwtRbacOptionsFunc {
 	}
 }
 
-func initJwtAuthRbacInstance(secret *os.File, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) {
+func initJwtAuthRbacInstance(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) {
 	jwtRbacAuthInstance = initJwtAuthRbac(secret, claimsType, options...)
 }
-func initJwtAuthRbac(secret *os.File, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
-	var bytes []byte
-	var err error
-	bytes, err = io.ReadAll(secret)
-	if err != nil {
-		panic("cannot load jwt secret file")
-	}
-
-	var key *ecdsa.PrivateKey
-	key, err = LoadPrivateKeyFromFile(bytes)
-	if err != nil {
-		panic("cannot load jwt secret file" + err.Error())
-	}
-
+func initJwtAuthRbac(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
 	var jwtAuth *RBACJwtAuth = &RBACJwtAuth{
-		authKey:    key,
+		authKey:    secret,
 		claimsType: claimsType,
 		options: &jwtRbacAuthOptions{
 			Timeout:    time.Duration(DefaultContextTimeout),

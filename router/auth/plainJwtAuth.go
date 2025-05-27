@@ -3,9 +3,7 @@ package auth
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -28,11 +26,11 @@ type jwtAuthOptions struct {
 var jwtAuthInstance *JwtAuth
 var jwtOnce sync.Once
 
-func NewJwtAuth(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
+func NewJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
 	return initJwtAuth(secret, claimsType, options...)
 }
 
-func NewSingletonJwtAuth(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
+func NewSingletonJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
 	jwtOnce.Do(func() { initJwtAuthInstance(secret, claimsType, options...) })
 	return jwtAuthInstance
 }
@@ -107,25 +105,12 @@ func WithCustomContextKey(key any) jwtRbacOptionsFunc {
 	}
 }
 
-func initJwtAuthInstance(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) {
+func initJwtAuthInstance(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) {
 	jwtAuthInstance = initJwtAuth(secret, claimsType, options...)
 }
-func initJwtAuth(secret *os.File, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
-	var bytes []byte
-	var err error
-	bytes, err = io.ReadAll(secret)
-	if err != nil {
-		panic("cannot load jwt secret file")
-	}
-
-	var key *ecdsa.PrivateKey
-	key, err = LoadPrivateKeyFromFile(bytes)
-	if err != nil {
-		panic("cannot load jwt secret file" + err.Error())
-	}
-
+func initJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
 	var jwtAuth *JwtAuth = &JwtAuth{
-		authKey:    key,
+		authKey:    secret,
 		claimsType: claimsType,
 		options: &jwtAuthOptions{
 			Timeout:    time.Duration(DefaultContextTimeout),
