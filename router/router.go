@@ -58,7 +58,7 @@ func (r *Router) methodHandler(path string) HandleFunc {
 		for m := range handlers {
 			allowedMethods = append(allowedMethods, string(m))
 		}
-		w.Header().Set("Allow", strings.Join(allowedMethods, ", "))
+		w.Header().Set("Access-Control-Allow-Methods", strings.Join(allowedMethods, ", "))
 
 		handler, exists := handlers[method]
 		if !exists {
