@@ -1,7 +1,9 @@
 package helpers
 
 import (
+	"database/sql"
 	"net/http"
+	"strconv"
 )
 
 type PaginationParams struct {
@@ -9,22 +11,33 @@ type PaginationParams struct {
 	PageSize uint
 }
 
-func GetPaginationParams(r *http.Request, defaultPageSize uint) (PaginationParams, error) {
+func GetPaginationParams(r *http.Request, defaultPageSize uint) PaginationParams {
 	params := PaginationParams{
 		Page:     1,
 		PageSize: defaultPageSize,
 	}
 
-	var optionalPageSize Optional[uint64]
-	optionalPageSize = GetUintQueryParam("page", r)
-	if optionalPageSize.IsPresent() {
-		params.Page = uint(optionalPageSize.Get())
+	page := getNullUintQueryParam("page", r)
+	if page.Valid {
+		params.Page = uint(page.Int64)
 	}
 
-	optionalPageSize = GetUintQueryParam("pageSize", r)
-	if optionalPageSize.IsPresent() {
-		params.PageSize = uint(optionalPageSize.Get())
+	pageSize := getNullUintQueryParam("pageSize", r)
+	if pageSize.Valid {
+		params.PageSize = uint(pageSize.Int64)
 	}
 
-	return params, nil
+	return params
+}
+
+func getNullUintQueryParam(key string, r *http.Request) sql.NullInt64 {
+	values := r.URL.Query()[key]
+	if len(values) == 0 {
+		return sql.NullInt64{Valid: false}
+	}
+	val, err := strconv.ParseUint(values[0], 10, 64)
+	if err != nil {
+		return sql.NullInt64{Valid: false}
+	}
+	return sql.NullInt64{Int64: int64(val), Valid: true}
 }

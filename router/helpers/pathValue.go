@@ -32,7 +32,7 @@ func GetUintPathValue(identifier string, r *http.Request) (uint64, error) {
 	}
 	return idUint, nil
 }
-func GeuUUidPathValue(identifier string, r *http.Request) (uuid.UUID, error) {
+func GetUUidPathValue(identifier string, r *http.Request) (uuid.UUID, error) {
 	var id string = r.PathValue(identifier)
 	var err error
 	var idUUID uuid.UUID

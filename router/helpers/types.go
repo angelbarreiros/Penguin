@@ -13,25 +13,3 @@ const (
 )
 
 type MaxStringLengthOption func() int
-
-type Optional[T comparable] struct {
-	value     T
-	present   bool
-	hasErrors error
-}
-
-func (o Optional[T]) IsPresent() bool {
-	return o.present
-}
-func (o Optional[T]) Get() T {
-	if !o.present {
-		panic("Get called on Optional with no value")
-	}
-	return o.value
-}
-func (o Optional[T]) Error() error {
-	if o.hasErrors != nil {
-		return o.hasErrors
-	}
-	return nil
-}

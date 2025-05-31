@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"database/sql"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,89 +11,86 @@ import (
 	"github.com/google/uuid"
 )
 
-func GetUintQueryParam(queryParameter string, r *http.Request) Optional[uint64] {
-	var id string = r.URL.Query().Get(queryParameter)
-	id = strings.TrimSpace(id)
+func GetNullUint64QueryParam(queryParameter string, r *http.Request) (sql.NullInt64, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
-		return Optional[uint64]{present: false, hasErrors: nil}
+		return sql.NullInt64{Valid: false}, nil
 	}
 	if !numericRegex.MatchString(id) {
-		return Optional[uint64]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")}
+		return sql.NullInt64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
 	}
 	idUint, err := strconv.ParseUint(id, 10, 64)
 	if err != nil {
-		return Optional[uint64]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")}
+		return sql.NullInt64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
 	}
-	return Optional[uint64]{value: idUint, present: true, hasErrors: nil}
+	return sql.NullInt64{Int64: int64(idUint), Valid: true}, nil
 }
 
-func GetIntQueryParam(queryParameter string, r *http.Request) Optional[int64] {
-	var id string = r.URL.Query().Get(queryParameter)
-	id = strings.TrimSpace(id)
+func GetNullInt64QueryParam(queryParameter string, r *http.Request) (sql.NullInt64, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
-		return Optional[int64]{present: false, hasErrors: nil}
+		return sql.NullInt64{Valid: false}, nil
 	}
 	if !numericRegex.MatchString(id) {
-		return Optional[int64]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "int")}
+		return sql.NullInt64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int")
 	}
 	idInt, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
-		return Optional[int64]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "int")}
+		return sql.NullInt64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int")
 	}
-	return Optional[int64]{value: idInt, present: true, hasErrors: nil}
+	return sql.NullInt64{Int64: idInt, Valid: true}, nil
 }
 
-func GetBoolQueryParam(queryParameter string, r *http.Request) Optional[bool] {
-	var id string = r.URL.Query().Get(queryParameter)
-	id = strings.TrimSpace(id)
+func GetNullBoolQueryParam(queryParameter string, r *http.Request) (sql.NullBool, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
-		return Optional[bool]{present: false, hasErrors: nil}
+		return sql.NullBool{Valid: false}, nil
 	}
 	if !boolRegex.MatchString(id) {
-		return Optional[bool]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "bool")}
+		return sql.NullBool{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "bool")
 	}
 	idBool, err := strconv.ParseBool(id)
 	if err != nil {
-		return Optional[bool]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "bool")}
+		return sql.NullBool{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "bool")
 	}
-	return Optional[bool]{value: idBool, present: true, hasErrors: nil}
+	return sql.NullBool{Bool: idBool, Valid: true}, nil
 }
 
-func GetUUIDQueryParam(queryParameter string, r *http.Request) Optional[uuid.UUID] {
-	var id string = r.URL.Query().Get(queryParameter)
-	id = strings.TrimSpace(id)
+func GetNullUUIDQueryParam(queryParameter string, r *http.Request) (uuid.NullUUID, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
-		return Optional[uuid.UUID]{present: false, hasErrors: nil}
+		return uuid.NullUUID{Valid: false}, nil
 	}
 	idUUID, err := uuid.Parse(id)
 	if err != nil {
-		return Optional[uuid.UUID]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "UUID")}
+		return uuid.NullUUID{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "UUID")
 	}
-	return Optional[uuid.UUID]{value: idUUID, present: true, hasErrors: nil}
+	return uuid.NullUUID{UUID: idUUID, Valid: true}, nil
 }
-func GetTimeQueryParam(queryParameter string, r *http.Request) Optional[time.Time] {
-	var id string = strings.TrimSpace(r.URL.Query().Get(queryParameter))
+
+func GetNullTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
-		return Optional[time.Time]{present: false, hasErrors: nil}
+		return sql.NullTime{Valid: false}, nil
 	}
 
 	parsedTime, err := time.Parse(iSO8601UTC, id)
 	if err == nil {
-		return Optional[time.Time]{value: parsedTime, present: true, hasErrors: nil}
+		return sql.NullTime{Time: parsedTime, Valid: true}, nil
 	}
 
 	parsedTime, err = time.Parse(iSO8601WithMS, id)
 	if err != nil {
-		return Optional[time.Time]{present: false, hasErrors: routerErrors.ErrQueryParameterWrongType(queryParameter, "time")}
+		return sql.NullTime{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "time")
 	}
 
-	return Optional[time.Time]{value: parsedTime, present: true, hasErrors: nil}
+	return sql.NullTime{Time: parsedTime, Valid: true}, nil
 }
 
-func GetStringQueryParam(queryParameter string, r *http.Request) Optional[string] {
+func GetNullStringQueryParam(queryParameter string, r *http.Request) (sql.NullString, error) {
 	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
-		return Optional[string]{present: false, hasErrors: nil}
+		return sql.NullString{Valid: false}, nil
 	}
-	return Optional[string]{value: id, present: true, hasErrors: nil}
+	return sql.NullString{String: id, Valid: true}, nil
 }
