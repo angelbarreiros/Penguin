@@ -17,7 +17,17 @@ func SendSuccessResponse(w http.ResponseWriter, data any) {
 		w.Write(jsonBytes)
 	}
 }
-
+func SendValidationErrorResponse(w http.ResponseWriter, errors []string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	response := map[string][]string{"error": errors}
+	jsonBytes, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Write(jsonBytes)
+}
 func SendErrorResponse(w http.ResponseWriter, statusCode int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)

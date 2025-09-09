@@ -11,5 +11,3 @@ const (
 	iSO8601WithMS    = "2006-01-02T15:04:05.000Z"
 	defaultMaxLength = 50
 )
-
-type MaxStringLengthOption func() int

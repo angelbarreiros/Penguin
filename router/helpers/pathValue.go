@@ -47,6 +47,8 @@ func GetUUidPathValue(identifier string, r *http.Request) (uuid.UUID, error) {
 	return idUUID, nil
 }
 
+type MaxStringLengthOption func() int
+
 func WithCustomLengthOption(length int) MaxStringLengthOption {
 	if length <= 0 || length > 2147483647 {
 		length = defaultMaxLength
