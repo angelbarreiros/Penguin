@@ -36,14 +36,14 @@ func (r *Router) NewRoute(route Route) {
 	}
 
 	if _, exists := r.routes[route.Path][route.Method]; exists {
-		return
+		panic(fmt.Sprintf("Route already exists: %s %s", method, route.Path))
 	}
 
 	r.routes[route.Path][route.Method] = route.Handler
 
 	for _, method := range route.AditionalMethods {
 		if _, exists := r.routes[route.Path][method]; exists {
-			panic(fmt.Sprintf("Route already exists: %s %s", method, route.Path))
+			continue
 		}
 		r.routes[route.Path][method] = route.Handler
 	}
