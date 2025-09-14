@@ -30,7 +30,7 @@ func RateLimitOptLimitPerSecond(limit float64) bucketOption {
 	}
 }
 
-func WithRateLimiting(hf handleFunc, opts ...bucketOption) handleFunc {
+func WithRateLimiting(hf http.HandlerFunc, opts ...bucketOption) http.HandlerFunc {
 	return rateLimiting(opts...)(hf)
 }
 
@@ -39,7 +39,7 @@ func rateLimiting(opts ...bucketOption) middlewareFunc {
 		tokenBuckets sync.Map
 	)
 
-	return func(hf handleFunc) handleFunc {
+	return func(hf http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var ip string = r.Header.Get("X-Real-IP")
 			if ip == "" {

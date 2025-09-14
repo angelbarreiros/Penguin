@@ -5,11 +5,11 @@ import (
 	"strconv"
 )
 
-func WithFeatureEnabledByHeader(header string, hf handleFunc) handleFunc {
+func WithFeatureEnabledByHeader(header string, hf http.HandlerFunc) http.HandlerFunc {
 	return featureEnabledByHeader(header)(hf)
 }
 func featureEnabledByHeader(header string) middlewareFunc {
-	return func(hf handleFunc) handleFunc {
+	return func(hf http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var headerValue string = r.Header.Get(header)
 			if headerValue == "" {

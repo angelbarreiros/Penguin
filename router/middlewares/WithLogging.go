@@ -7,12 +7,12 @@ import (
 	"github.com/angelbarreiros/Penguin/logger"
 )
 
-func WithLogging(hf handleFunc) handleFunc {
+func WithLogging(hf http.HandlerFunc) http.HandlerFunc {
 	return loggingMiddleware()(hf)
 }
 
 func loggingMiddleware() middlewareFunc {
-	return func(hf handleFunc) handleFunc {
+	return func(hf http.HandlerFunc) http.HandlerFunc {
 		var l = logger.GetConsoleLogger()
 		return func(w http.ResponseWriter, r *http.Request) {
 			var start time.Time = time.Now()

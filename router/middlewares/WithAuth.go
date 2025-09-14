@@ -7,12 +7,12 @@ import (
 	"github.com/angelbarreiros/Penguin/router/auth"
 )
 
-func WithAuthMiddleWare(auth auth.PlainAuthInterface, hf handleFunc) handleFunc {
+func WithAuthMiddleWare(auth auth.PlainAuthInterface, hf http.HandlerFunc) http.HandlerFunc {
 	return authMiddleWareFunc(auth)(hf)
 }
 
 func authMiddleWareFunc(auth auth.PlainAuthInterface) middlewareFunc {
-	return func(hf handleFunc) handleFunc {
+	return func(hf http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if auth == nil {
 				hf(w, r)
@@ -38,7 +38,7 @@ func authMiddleWareFunc(auth auth.PlainAuthInterface) middlewareFunc {
 	}
 }
 
-func WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf handleFunc) handleFunc {
+func WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		if authorize, err := authType.Authorize(r); !authorize || err != nil {

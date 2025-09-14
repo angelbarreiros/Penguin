@@ -6,11 +6,9 @@ import (
 	"strings"
 )
 
-type HandleFunc func(http.ResponseWriter, *http.Request)
-
 type Router struct {
 	mux    *http.ServeMux
-	routes map[string]map[HTTPMethod]HandleFunc
+	routes map[string]map[HTTPMethod]http.HandlerFunc
 }
 
 func (r *Router) StartServer(s string) {
@@ -25,13 +23,13 @@ func InitRouter() *Router {
 type Route struct {
 	Path             string
 	Method           HTTPMethod
-	Handler          HandleFunc
+	Handler          http.HandlerFunc
 	AditionalMethods []HTTPMethod
 }
 
 func (r *Router) NewRoute(route Route) {
 	if r.routes[route.Path] == nil {
-		r.routes[route.Path] = make(map[HTTPMethod]HandleFunc)
+		r.routes[route.Path] = make(map[HTTPMethod]http.HandlerFunc)
 		r.mux.HandleFunc(route.Path, r.methodHandler(route.Path))
 	}
 
@@ -48,7 +46,7 @@ func (r *Router) NewRoute(route Route) {
 		r.routes[route.Path][method] = route.Handler
 	}
 }
-func (r *Router) methodHandler(path string) HandleFunc {
+func (r *Router) methodHandler(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 
 		var method HTTPMethod = HTTPMethod(req.Method)
@@ -92,7 +90,7 @@ func initRouter() {
 	if nil == routerInstance {
 		routerInstance = &Router{
 			mux:    http.NewServeMux(),
-			routes: make(map[string]map[HTTPMethod]HandleFunc),
+			routes: make(map[string]map[HTTPMethod]http.HandlerFunc),
 		}
 	}
 

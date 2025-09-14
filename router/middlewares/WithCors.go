@@ -9,12 +9,12 @@ import (
 	"github.com/angelbarreiros/Penguin/router/cors"
 )
 
-func WithCors(corrsConfig *cors.CORSConfig, hf handleFunc) handleFunc {
+func WithCors(corrsConfig *cors.CORSConfig, hf http.HandlerFunc) http.HandlerFunc {
 	return corsMiddleware(corrsConfig)(hf)
 }
 
 func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
-	return func(hf handleFunc) handleFunc {
+	return func(hf http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if corrsConfig == nil {
 				hf(w, r)

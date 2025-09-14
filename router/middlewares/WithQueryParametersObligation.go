@@ -2,11 +2,11 @@ package middlewares
 
 import "net/http"
 
-func WithQueryParametersObligation(queryParameters []string, hf handleFunc) handleFunc {
+func WithQueryParametersObligation(queryParameters []string, hf http.HandlerFunc) http.HandlerFunc {
 	return queryParametersObligation(queryParameters)(hf)
 }
 func queryParametersObligation(queryParameters []string) middlewareFunc {
-	return func(hf handleFunc) handleFunc {
+	return func(hf http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			for _, queryParameter := range queryParameters {
 				if r.URL.Query().Get(queryParameter) == "" {

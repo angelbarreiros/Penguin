@@ -7,7 +7,7 @@ import (
 	"github.com/angelbarreiros/Penguin/logger"
 )
 
-func WithRecovery(hf handleFunc) handleFunc {
+func WithRecovery(hf http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer handlePanic(w)
 		hf(w, r)
