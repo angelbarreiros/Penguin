@@ -19,14 +19,18 @@ func authMiddleWareFunc(auth auth.PlainAuthInterface) middlewareFunc {
 				return
 			}
 			if authorize, err := auth.Authorize(r); !authorize || err != nil {
-				http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
 				return
 
 			}
 			user, err := auth.GetUser(r)
 
 			if err != nil {
-				http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
 				return
 			}
 			var ctx, cancel = context.WithTimeout(context.Background(), auth.GetTimeout())
@@ -42,13 +46,17 @@ func WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf http.Ha
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		if authorize, err := authType.Authorize(r); !authorize || err != nil {
-			http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
 			return
 		}
 
 		user, err := authType.GetUser(r)
 		if err != nil {
-			http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
 			return
 		}
 
@@ -57,7 +65,9 @@ func WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf http.Ha
 		ctx = context.WithValue(ctx, authType.GetContextKey(), user)
 		r = r.WithContext(ctx)
 		if !authType.RBAC(roles) {
-			http.Error(w, "Forbidden: You don't have the required role", http.StatusForbidden)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error": "Forbidden: You don't have the required role"}`))
 			return
 		}
 

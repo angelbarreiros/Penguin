@@ -11,7 +11,9 @@ func SendSuccessResponse(w http.ResponseWriter, data any) {
 	if data != nil {
 		jsonBytes, err := json.Marshal(data)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "` + err.Error() + `"}`))
 			return
 		}
 		w.Write(jsonBytes)
@@ -23,7 +25,9 @@ func SendValidationErrorResponse(w http.ResponseWriter, errors []string) {
 	response := map[string][]string{"error": errors}
 	jsonBytes, err := json.Marshal(response)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "` + err.Error() + `"}`))
 		return
 	}
 	w.Write(jsonBytes)
@@ -34,7 +38,9 @@ func SendErrorResponse(w http.ResponseWriter, statusCode int, message string) {
 	response := map[string]string{"error": message}
 	jsonBytes, err := json.Marshal(response)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "` + err.Error() + `"}`))
 		return
 	}
 	w.Write(jsonBytes)

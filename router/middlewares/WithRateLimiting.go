@@ -82,7 +82,9 @@ func rateLimiting(opts ...bucketOption) middlewareFunc {
 				currentBucket.tokens--
 				hf(w, r)
 			} else {
-				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"error": "Rate limit exceeded"}`))
 				return
 			}
 		}

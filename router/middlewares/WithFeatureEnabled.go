@@ -15,11 +15,15 @@ func featureEnabled(env string) middlewareFunc {
 			var osEnvEnabled string = os.Getenv(env)
 			var isEnabled, err = strconv.ParseBool(osEnvEnabled)
 			if err != nil {
-				http.Error(w, "Feature not enabled", http.StatusForbidden)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte(`{"error": "Feature not enabled"}`))
 				return
 			}
 			if !isEnabled {
-				http.Error(w, "Feature not enabled", http.StatusForbidden)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte(`{"error": "Feature not enabled"}`))
 				return
 			}
 			hf(w, r)

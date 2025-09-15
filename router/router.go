@@ -60,7 +60,9 @@ func (r *Router) methodHandler(path string) http.HandlerFunc {
 
 		handler, exists := handlers[method]
 		if !exists {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.Write([]byte(`{"error": "Method not allowed"}`))
 			return
 		}
 		if req.Method == http.MethodOptions {

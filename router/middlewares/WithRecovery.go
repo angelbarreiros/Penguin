@@ -18,6 +18,8 @@ func handlePanic(w http.ResponseWriter) {
 	if err := recover(); err != nil {
 		logger.GetConsoleLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
 		logger.GetFileLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "Internal Server Error"}`))
 	}
 }

@@ -42,7 +42,9 @@ func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
 			var allAllowedOrigin bool = slices.Contains(corrsConfig.AllowedOrigins(), cors.AllowAllOrigin)
 			if !allAllowedOrigin {
 				if strings.TrimSpace(origin) == "" || !slices.Contains(corrsConfig.AllowedOrigins(), origin) {
-					http.Error(w, "Origin not allowed", http.StatusForbidden)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					w.Write([]byte(`{"error": "Origin not allowed"}`))
 					return
 				}
 

@@ -274,20 +274,46 @@ func (s *Scheduler) processJobs() {
 		return
 	}
 
+	// Collect jobs to execute without holding the lock
+	var jobsToExecute []jobFunction
 	var jobsToDelete []uint64
+	var intervalJobsToUpdate []struct {
+		id      uint64
+		nextRun time.Time
+	}
+
 	for k, v := range s.jobs {
 		if 0 == v.jobStatus.state {
 			continue
 		}
 		if v.mode == 0 && time.Now().After(v.when) {
-			v.jobFunction.executeJob()
+			jobsToExecute = append(jobsToExecute, *v.jobFunction)
 			jobsToDelete = append(jobsToDelete, k)
 		} else if v.mode == 1 && time.Now().After(v.nextRun) {
-			v.jobFunction.executeJob()
-			v.nextRun = time.Now().Add(v.interval)
+			jobsToExecute = append(jobsToExecute, *v.jobFunction)
+			intervalJobsToUpdate = append(intervalJobsToUpdate, struct {
+				id      uint64
+				nextRun time.Time
+			}{k, time.Now().Add(v.interval)})
 		}
 	}
 	s.mux.RUnlock()
+
+	// Execute jobs without holding any locks
+	for _, jobFunc := range jobsToExecute {
+		go jobFunc.executeJob()
+	}
+
+	// Update job states after execution
+	if len(intervalJobsToUpdate) > 0 {
+		s.mux.Lock()
+		for _, update := range intervalJobsToUpdate {
+			if job, exists := s.jobs[update.id]; exists {
+				job.nextRun = update.nextRun
+			}
+		}
+		s.mux.Unlock()
+	}
 
 	if len(jobsToDelete) > 0 {
 		s.mux.Lock()
