@@ -10,16 +10,13 @@ import (
 
 type jobStatus struct {
 	state       int16 // "running" : 1 , "paused" 0:  "failed" : -1
-	lastRunTime time.Time
 	nextRunTime time.Time
-	errorCount  int
-	lastError   error
 }
 type Scheduler struct {
 	chanel     chan job
 	ticker     *time.Ticker
-	mux        sync.RWMutex
-	jobs       map[uint64]*job
+	stateMux   sync.RWMutex // Solo para estado del scheduler
+	jobs       *sync.Map    // Cambio a sync.Map
 	wg         *sync.WaitGroup
 	isRunning  bool
 	isSleeping bool
@@ -81,9 +78,7 @@ func (s *Scheduler) ScheduleJob(when time.Time, jobFunction *jobFunction) (uint6
 			nextRunTime: when,
 		},
 	}
-	s.mux.Lock()
-	s.jobs[job.id] = &job
-	s.mux.Unlock()
+	s.jobs.Store(job.id, &job)
 	s.chanel <- job
 
 	return id, nil
@@ -105,10 +100,7 @@ func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, jobFunction *job
 			nextRunTime: time.Now().Add(interval),
 		},
 	}
-	s.mux.Lock()
-
-	s.jobs[intervalJob.id] = &intervalJob
-	s.mux.Unlock()
+	s.jobs.Store(intervalJob.id, &intervalJob)
 	s.chanel <- intervalJob
 	return id, nil
 }
@@ -143,13 +135,10 @@ func (s *Scheduler) UnPauseJob(id uint64) error {
 	return nil
 }
 func (s *Scheduler) GetChannel(id uint64) chan []any {
-	s.mux.RLock()
-	defer s.mux.RUnlock()
-	if job, exists := s.jobs[id]; exists {
-		if job.jobFunction == nil {
-			return nil
+	if jobInterface, exists := s.jobs.Load(id); exists {
+		if job := jobInterface.(*job); job.jobFunction != nil {
+			return job.jobFunction.returnChannel
 		}
-		return job.jobFunction.returnChannel
 	}
 	return nil
 }
@@ -172,8 +161,8 @@ func (s *Scheduler) IsRunning() bool {
 // which may use more memory as resources are reallocated when resumed.
 // Note: The Scheduler will sleep if there are no jobs currently running.
 func (s *Scheduler) Pause() {
-	s.mux.Lock()
-	defer s.mux.Unlock()
+	s.stateMux.Lock()
+	defer s.stateMux.Unlock()
 	if s.isRunning {
 		log.Println("Scheduler Paused")
 		if s.ticker != nil {
@@ -185,8 +174,8 @@ func (s *Scheduler) Pause() {
 	}
 }
 func (s *Scheduler) UnPause() {
-	s.mux.Lock()
-	defer s.mux.Unlock()
+	s.stateMux.Lock()
+	defer s.stateMux.Unlock()
 
 	if !s.isRunning {
 		log.Println("Scheduler Unpaused")
@@ -200,8 +189,8 @@ func (s *Scheduler) UnPause() {
 	}
 }
 func (s *Scheduler) sleep() {
-	s.mux.Lock()
-	defer s.mux.Unlock()
+	s.stateMux.Lock()
+	defer s.stateMux.Unlock()
 	if !s.isSleeping {
 		log.Println("Scheduler sleeps")
 		if s.ticker != nil {
@@ -212,8 +201,8 @@ func (s *Scheduler) sleep() {
 	}
 }
 func (s *Scheduler) awake() {
-	s.mux.Lock()
-	defer s.mux.Unlock()
+	s.stateMux.Lock()
+	defer s.stateMux.Unlock()
 	if s.isSleeping {
 		log.Println("Scheduler awakes")
 		s.ticker.Reset(time.Second)
@@ -225,7 +214,7 @@ func (s *Scheduler) awake() {
 func initScheduler() {
 	schedulerInstance = &Scheduler{
 		chanel:     make(chan job),
-		jobs:       make(map[uint64]*job, 10000),
+		jobs:       &sync.Map{},
 		ticker:     time.NewTicker(1 * time.Second),
 		wg:         new(sync.WaitGroup),
 		isRunning:  true,
@@ -244,14 +233,14 @@ func (s *Scheduler) schedulerLoop() {
 
 		case _, ok := <-s.chanel:
 			if !ok {
-				s.mux.Lock()
+				s.stateMux.Lock()
 				s.wg.Done()
-				s.mux.Unlock()
+				s.stateMux.Unlock()
 				return
 			}
-			s.mux.RLock()
+			s.stateMux.RLock()
 			isSleeping := s.isSleeping
-			s.mux.RUnlock()
+			s.stateMux.RUnlock()
 			if isSleeping {
 				s.awake()
 			}
@@ -259,22 +248,32 @@ func (s *Scheduler) schedulerLoop() {
 	}
 }
 func (s *Scheduler) getTickerChannel() <-chan time.Time {
-	s.mux.RLock()
-	defer s.mux.RUnlock()
+	s.stateMux.RLock()
+	defer s.stateMux.RUnlock()
 	if s.ticker != nil {
 		return s.ticker.C
 	}
 	return make(<-chan time.Time)
 }
 func (s *Scheduler) processJobs() {
-	s.mux.RLock()
-	if len(s.jobs) == 0 && s.isRunning && !s.isSleeping {
-		s.mux.RUnlock()
+	s.stateMux.RLock()
+	isRunning := s.isRunning
+	isSleeping := s.isSleeping
+	s.stateMux.RUnlock()
+
+	// Check if we need to sleep (no jobs available)
+	jobCount := 0
+	s.jobs.Range(func(key, value interface{}) bool {
+		jobCount++
+		return false // Stop after first job found
+	})
+
+	if jobCount == 0 && isRunning && !isSleeping {
 		s.sleep()
 		return
 	}
 
-	// Collect jobs to execute without holding the lock
+	// Collect jobs to execute without holding any locks
 	var jobsToExecute []jobFunction
 	var jobsToDelete []uint64
 	var intervalJobsToUpdate []struct {
@@ -282,53 +281,49 @@ func (s *Scheduler) processJobs() {
 		nextRun time.Time
 	}
 
-	for k, v := range s.jobs {
-		if 0 == v.jobStatus.state {
-			continue
+	now := time.Now()
+	s.jobs.Range(func(key, value interface{}) bool {
+		k := key.(uint64)
+		v := value.(*job)
+
+		if v.jobStatus.state == 0 { // paused
+			return true // continue range
 		}
-		if v.mode == 0 && time.Now().After(v.when) {
+
+		if v.mode == 0 && now.After(v.when) { // one-time job ready
 			jobsToExecute = append(jobsToExecute, *v.jobFunction)
 			jobsToDelete = append(jobsToDelete, k)
-		} else if v.mode == 1 && time.Now().After(v.nextRun) {
+		} else if v.mode == 1 && now.After(v.nextRun) { // interval job ready
 			jobsToExecute = append(jobsToExecute, *v.jobFunction)
 			intervalJobsToUpdate = append(intervalJobsToUpdate, struct {
 				id      uint64
 				nextRun time.Time
-			}{k, time.Now().Add(v.interval)})
+			}{k, now.Add(v.interval)})
 		}
-	}
-	s.mux.RUnlock()
+		return true // continue range
+	})
 
 	// Execute jobs without holding any locks
 	for _, jobFunc := range jobsToExecute {
 		go jobFunc.executeJob()
 	}
 
-	// Update job states after execution
-	if len(intervalJobsToUpdate) > 0 {
-		s.mux.Lock()
-		for _, update := range intervalJobsToUpdate {
-			if job, exists := s.jobs[update.id]; exists {
+	// Update interval jobs next run time
+	for _, update := range intervalJobsToUpdate {
+		if jobInterface, exists := s.jobs.Load(update.id); exists {
+			if job := jobInterface.(*job); job != nil {
 				job.nextRun = update.nextRun
 			}
 		}
-		s.mux.Unlock()
 	}
 
-	if len(jobsToDelete) > 0 {
-		s.mux.Lock()
-		for _, k := range jobsToDelete {
-			delete(s.jobs, k)
-		}
-		s.mux.Unlock()
+	// Delete completed one-time jobs
+	for _, k := range jobsToDelete {
+		s.jobs.Delete(k)
 	}
 }
 func (s *Scheduler) removeById(id uint64) error {
-	s.mux.Lock()
-	defer s.mux.Unlock()
-
-	if _, exists := s.jobs[id]; exists {
-		delete(s.jobs, id)
+	if _, exists := s.jobs.LoadAndDelete(id); exists {
 		return nil
 	}
 	return fmt.Errorf("job with id %d not found", id)
@@ -341,24 +336,20 @@ func (j jobFunction) executeJob() {
 	}
 }
 func (s *Scheduler) pauseById(id uint64) error {
-	s.mux.Lock()
-	defer s.mux.Unlock()
-
-	if job, exists := s.jobs[id]; exists {
-		job.jobStatus.state = 0
-		return nil
+	if jobInterface, exists := s.jobs.Load(id); exists {
+		if job := jobInterface.(*job); job != nil {
+			job.jobStatus.state = 0
+			return nil
+		}
 	}
 	return fmt.Errorf("job with id %d not found", id)
-
 }
 func (s *Scheduler) unPauseById(id uint64) error {
-	s.mux.Lock()
-	defer s.mux.Unlock()
-
-	if job, exists := s.jobs[id]; exists {
-		job.jobStatus.state = 1
-		return nil
+	if jobInterface, exists := s.jobs.Load(id); exists {
+		if job := jobInterface.(*job); job != nil {
+			job.jobStatus.state = 1
+			return nil
+		}
 	}
 	return fmt.Errorf("job with id %d not found", id)
-
 }
