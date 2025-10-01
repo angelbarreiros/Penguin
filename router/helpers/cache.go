@@ -219,6 +219,58 @@ func (c *uuidCache[T]) Has(key uuid.UUID) bool {
 	return ok
 }
 
+// Range - Método público para iterar sobre todas las entradas del cache
+func (c *uuidCache[T]) Range(fn func(key uuid.UUID, value T) bool) {
+	c.cache.Range(func(k, v interface{}) bool {
+		key := k.(uuid.UUID)
+		item := v.(uuidCacheItem[T])
+		return fn(key, item.getValue())
+	})
+}
+
+// Keys - Método público para obtener todas las claves
+func (c *uuidCache[T]) Keys() []uuid.UUID {
+	var keys []uuid.UUID
+	c.cache.Range(func(k, v interface{}) bool {
+		keys = append(keys, k.(uuid.UUID))
+		return true
+	})
+	return keys
+}
+
+// Values - Método público para obtener todos los valores
+func (c *uuidCache[T]) Values() []T {
+	var values []T
+	c.cache.Range(func(k, v interface{}) bool {
+		item := v.(uuidCacheItem[T])
+		values = append(values, item.getValue())
+		return true
+	})
+	return values
+}
+
+// GetAll - Método público para obtener un mapa regular (copia) para range tradicional
+func (c *uuidCache[T]) GetAll() map[uuid.UUID]T {
+	result := make(map[uuid.UUID]T)
+	c.cache.Range(func(k, v interface{}) bool {
+		key := k.(uuid.UUID)
+		item := v.(uuidCacheItem[T])
+		result[key] = item.getValue()
+		return true
+	})
+	return result
+}
+
+// Len - Método público para obtener el número de elementos en el cache
+func (c *uuidCache[T]) Len() int {
+	count := 0
+	c.cache.Range(func(k, v interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 // Generic UUID cache instance management - privado
 var (
 	uuidCacheInstances = make(map[string]any)
@@ -232,6 +284,12 @@ type UUIDCache[T any] interface {
 	Load(key uuid.UUID) (T, bool)
 	Delete(key uuid.UUID)
 	Has(key uuid.UUID) bool
+	// Métodos de iteración
+	Range(fn func(key uuid.UUID, value T) bool)
+	Keys() []uuid.UUID
+	Values() []T
+	GetAll() map[uuid.UUID]T
+	Len() int
 }
 
 // NewUUIDCache - Función pública para crear una nueva instancia de cache
