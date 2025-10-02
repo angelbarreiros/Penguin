@@ -318,3 +318,319 @@ func GetUUIDCacheInstance[T any](cacheType string) UUIDCache[T] {
 	uuidCacheInstances[cacheType] = newCache
 	return newCache
 }
+
+// List-based cache implementation with automatic list expiration
+
+// listCacheCleaner es para limpiar toda la lista cuando expire
+type listCacheCleaner[T any] struct {
+	cache *listCache[T]
+}
+
+func (c *listCacheCleaner[T]) Execute() []any {
+	c.cache.Clear()
+	return nil
+}
+
+// listCache es la implementación privada - toda la lista expira junta
+type listCache[T any] struct {
+	items     []T
+	mutex     sync.RWMutex
+	cleaner   *scheduler.Scheduler
+	createdAt time.Time
+	ttl       time.Duration
+}
+
+func newListCache[T any]() *listCache[T] {
+	return &listCache[T]{
+		items:     make([]T, 0),
+		cleaner:   scheduler.StartScheduler(),
+		createdAt: time.Now(),
+		ttl:       0, // Sin expiración por defecto
+	}
+}
+
+// SetTTL - Establecer tiempo de vida para toda la lista
+func (c *listCache[T]) SetTTL(duration time.Duration) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.ttl = duration
+	c.createdAt = time.Now()
+
+	if duration > 0 {
+		// Programar limpieza automática
+		job := scheduler.JobFunction(&listCacheCleaner[T]{cache: c})
+		c.cleaner.ScheduleJob(time.Now().Add(duration), job)
+	}
+}
+
+// isExpired - Verificar si toda la lista ha expirado
+func (c *listCache[T]) isExpired() bool {
+	if c.ttl <= 0 {
+		return false // Sin expiración
+	}
+	return time.Since(c.createdAt) > c.ttl
+}
+
+// Add - Agregar un elemento al final de la lista
+func (c *listCache[T]) Add(value T) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.isExpired() {
+		c.items = c.items[:0]    // Limpiar si está expirada
+		c.createdAt = time.Now() // Resetear tiempo
+	}
+
+	c.items = append(c.items, value)
+}
+
+// AddFirst - Agregar un elemento al inicio de la lista
+func (c *listCache[T]) AddFirst(value T) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.isExpired() {
+		c.items = c.items[:0]    // Limpiar si está expirada
+		c.createdAt = time.Now() // Resetear tiempo
+	}
+
+	c.items = append([]T{value}, c.items...)
+}
+
+// Get - Obtener elemento por índice
+func (c *listCache[T]) Get(index int) (T, bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if c.isExpired() || index < 0 || index >= len(c.items) {
+		var zero T
+		return zero, false
+	}
+
+	return c.items[index], true
+}
+
+// GetFirst - Obtener primer elemento
+func (c *listCache[T]) GetFirst() (T, bool) {
+	return c.Get(0)
+}
+
+// GetLast - Obtener último elemento
+func (c *listCache[T]) GetLast() (T, bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if c.isExpired() || len(c.items) == 0 {
+		var zero T
+		return zero, false
+	}
+
+	return c.items[len(c.items)-1], true
+}
+
+// GetAll - Obtener todos los elementos (copia)
+func (c *listCache[T]) GetAll() []T {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if c.isExpired() {
+		return []T{}
+	}
+
+	// Crear copia
+	result := make([]T, len(c.items))
+	copy(result, c.items)
+	return result
+}
+
+// GetAllWithIndex - Obtener todos los elementos con sus índices
+func (c *listCache[T]) GetAllWithIndex() map[int]T {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	result := make(map[int]T)
+	if c.isExpired() {
+		return result
+	}
+
+	for i, item := range c.items {
+		result[i] = item
+	}
+	return result
+}
+
+// Range - Iterar sobre todos los elementos
+func (c *listCache[T]) Range(fn func(index int, value T) bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if c.isExpired() {
+		return
+	}
+
+	for i, item := range c.items {
+		if !fn(i, item) {
+			break
+		}
+	}
+}
+
+// RemoveAt - Remover elemento por índice
+func (c *listCache[T]) RemoveAt(index int) bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.isExpired() || index < 0 || index >= len(c.items) {
+		return false
+	}
+
+	c.items = append(c.items[:index], c.items[index+1:]...)
+	return true
+}
+
+// RemoveFirst - Remover primer elemento
+func (c *listCache[T]) RemoveFirst() bool {
+	return c.RemoveAt(0)
+}
+
+// RemoveLast - Remover último elemento
+func (c *listCache[T]) RemoveLast() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.isExpired() || len(c.items) == 0 {
+		return false
+	}
+
+	c.items = c.items[:len(c.items)-1]
+	return true
+}
+
+// Clear - Limpiar toda la lista manualmente
+func (c *listCache[T]) Clear() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.items = c.items[:0]
+	c.createdAt = time.Now()
+}
+
+// Len - Obtener número de elementos
+func (c *listCache[T]) Len() int {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if c.isExpired() {
+		return 0
+	}
+
+	return len(c.items)
+}
+
+// IsEmpty - Verificar si la lista está vacía
+func (c *listCache[T]) IsEmpty() bool {
+	return c.Len() == 0
+}
+
+// IsExpired - Método público para verificar si la lista ha expirado
+func (c *listCache[T]) IsExpired() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.isExpired()
+}
+
+// GetTTL - Obtener el TTL actual
+func (c *listCache[T]) GetTTL() time.Duration {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return c.ttl
+}
+
+// GetAge - Obtener la edad de la lista
+func (c *listCache[T]) GetAge() time.Duration {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return time.Since(c.createdAt)
+}
+
+// GetRemainingTTL - Obtener tiempo restante antes de expiración
+func (c *listCache[T]) GetRemainingTTL() time.Duration {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if c.ttl <= 0 {
+		return -1 // Sin expiración
+	}
+
+	remaining := c.ttl - time.Since(c.createdAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// ListCache - Interfaz pública para cache de lista (simplificada)
+type ListCache[T any] interface {
+	// Métodos de escritura
+	Add(value T)
+	AddFirst(value T)
+
+	// Métodos de lectura
+	Get(index int) (T, bool)
+	GetFirst() (T, bool)
+	GetLast() (T, bool)
+	GetAll() []T
+	GetAllWithIndex() map[int]T
+	Range(fn func(index int, value T) bool)
+
+	// Métodos de eliminación
+	RemoveAt(index int) bool
+	RemoveFirst() bool
+	RemoveLast() bool
+	Clear() // Control manual total
+
+	// Métodos de información
+	Len() int
+	IsEmpty() bool
+	IsExpired() bool
+
+	// Control de TTL para toda la lista
+	SetTTL(duration time.Duration)
+	GetTTL() time.Duration
+	GetAge() time.Duration
+	GetRemainingTTL() time.Duration
+}
+
+// NewListCache - Función pública para crear una nueva instancia de cache de lista
+func NewListCache[T any]() ListCache[T] {
+	return newListCache[T]()
+}
+
+// Generic list cache instance management - privado
+var (
+	listCacheInstances = make(map[string]any)
+	listCacheMutex     sync.RWMutex
+)
+
+// GetListCacheInstance - Función pública para obtener una instancia singleton de cache de lista
+func GetListCacheInstance[T any](cacheType string) ListCache[T] {
+	listCacheMutex.RLock()
+	if instance, ok := listCacheInstances[cacheType]; ok {
+		listCacheMutex.RUnlock()
+		return instance.(*listCache[T])
+	}
+	listCacheMutex.RUnlock()
+
+	listCacheMutex.Lock()
+	defer listCacheMutex.Unlock()
+
+	// Double check after acquiring write lock
+	if instance, ok := listCacheInstances[cacheType]; ok {
+		return instance.(*listCache[T])
+	}
+
+	newCache := newListCache[T]()
+	listCacheInstances[cacheType] = newCache
+	return newCache
+}
