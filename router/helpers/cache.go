@@ -155,14 +155,17 @@ func newUUIDCacheItem[T any](value T, expiration time.Duration) uuidCacheItem[T]
 
 // UUIDCache es la estructura principal - solo algunos métodos serán públicos
 type uuidCache[T any] struct {
-	cache   *sync.Map
-	cleaner *scheduler.Scheduler
+	cache      *sync.Map
+	cleaner    *scheduler.Scheduler
+	defaultTTL time.Duration
+	ttlMutex   sync.RWMutex
 }
 
 func newUUIDCache[T any]() *uuidCache[T] {
 	return &uuidCache[T]{
-		cache:   &sync.Map{},
-		cleaner: scheduler.StartScheduler(),
+		cache:      &sync.Map{},
+		cleaner:    scheduler.StartScheduler(),
+		defaultTTL: 0, // No default expiration
 	}
 }
 
@@ -183,11 +186,42 @@ func (c *uuidCache[T]) Store(key uuid.UUID, value T, expiration time.Duration) {
 	c.set(key, item)
 }
 
+// StoreWithDefaultTTL - Método público para almacenar un valor usando el TTL predefinido
+func (c *uuidCache[T]) StoreWithDefaultTTL(key uuid.UUID, value T) {
+	c.ttlMutex.RLock()
+	ttl := c.defaultTTL
+	c.ttlMutex.RUnlock()
+
+	item := newUUIDCacheItem(value, ttl)
+	c.set(key, item)
+}
+
+// SetDefaultTTL - Establecer tiempo de expiración predefinido para todos los elementos nuevos
+func (c *uuidCache[T]) SetDefaultTTL(duration time.Duration) {
+	c.ttlMutex.Lock()
+	defer c.ttlMutex.Unlock()
+	c.defaultTTL = duration
+}
+
+// GetDefaultTTL - Obtener el TTL predefinido actual
+func (c *uuidCache[T]) GetDefaultTTL() time.Duration {
+	c.ttlMutex.RLock()
+	defer c.ttlMutex.RUnlock()
+	return c.defaultTTL
+}
+
 // StoreWithNewKey - Método público para almacenar un valor generando una nueva clave UUID
 func (c *uuidCache[T]) StoreWithNewKey(value T, expiration time.Duration) uuid.UUID {
 	key := uuid.New()
 	item := newUUIDCacheItem(value, expiration)
 	c.set(key, item)
+	return key
+}
+
+// StoreWithNewKeyAndDefaultTTL - Método público para almacenar un valor con nueva clave UUID usando TTL predefinido
+func (c *uuidCache[T]) StoreWithNewKeyAndDefaultTTL(value T) uuid.UUID {
+	key := uuid.New()
+	c.StoreWithDefaultTTL(key, value)
 	return key
 }
 
@@ -280,7 +314,9 @@ var (
 // UUIDCache - Interfaz pública que expone solo los métodos necesarios
 type UUIDCache[T any] interface {
 	Store(key uuid.UUID, value T, expiration time.Duration)
+	StoreWithDefaultTTL(key uuid.UUID, value T)
 	StoreWithNewKey(value T, expiration time.Duration) uuid.UUID
+	StoreWithNewKeyAndDefaultTTL(value T) uuid.UUID
 	Load(key uuid.UUID) (T, bool)
 	Delete(key uuid.UUID)
 	Has(key uuid.UUID) bool
@@ -290,6 +326,9 @@ type UUIDCache[T any] interface {
 	Values() []T
 	GetAll() map[uuid.UUID]T
 	Len() int
+	// Control de TTL predefinido
+	SetDefaultTTL(duration time.Duration)
+	GetDefaultTTL() time.Duration
 }
 
 // NewUUIDCache - Función pública para crear una nueva instancia de cache
