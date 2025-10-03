@@ -305,6 +305,11 @@ func (c *uuidCache[T]) Len() int {
 	return count
 }
 
+// Clear - Método público para limpiar completamente el cache
+func (c *uuidCache[T]) Clear() {
+	c.cache.Clear()
+}
+
 // Generic UUID cache instance management - privado
 var (
 	uuidCacheInstances = make(map[string]any)
@@ -329,6 +334,8 @@ type UUIDCache[T any] interface {
 	// Control de TTL predefinido
 	SetDefaultTTL(duration time.Duration)
 	GetDefaultTTL() time.Duration
+	// Control de limpieza
+	Clear()
 }
 
 // NewUUIDCache - Función pública para crear una nueva instancia de cache
@@ -526,6 +533,11 @@ func (c *stringCache[T]) Len() int {
 	return count
 }
 
+// Clear - Método público para limpiar completamente el cache
+func (c *stringCache[T]) Clear() {
+	c.cache.Clear()
+}
+
 // Generic string cache instance management - privado
 var (
 	stringCacheInstances = make(map[string]any)
@@ -548,6 +560,8 @@ type StringCache[T any] interface {
 	// Control de TTL predefinido
 	SetDefaultTTL(duration time.Duration)
 	GetDefaultTTL() time.Duration
+	// Control de limpieza
+	Clear()
 }
 
 // NewStringCache - Función pública para crear una nueva instancia de cache de strings
