@@ -358,6 +358,225 @@ func GetUUIDCacheInstance[T any](cacheType string) UUIDCache[T] {
 	return newCache
 }
 
+// String-based cache implementation with parametrized types
+
+type stringCleaner struct {
+	key   string
+	cache *sync.Map
+}
+
+func (c *stringCleaner) Execute() []any {
+	c.cache.Delete(c.key)
+	return nil
+}
+
+// stringCacheItem es privado - implementación interna
+type stringCacheItem[T any] struct {
+	value      T
+	expiration time.Duration
+	generated  time.Time
+}
+
+func (c stringCacheItem[T]) getValue() T {
+	return c.value
+}
+
+func newStringCacheItem[T any](value T, expiration time.Duration) stringCacheItem[T] {
+	return stringCacheItem[T]{
+		value:      value,
+		expiration: expiration,
+		generated:  time.Now(),
+	}
+}
+
+// stringCache es la estructura principal - solo algunos métodos serán públicos
+type stringCache[T any] struct {
+	cache      *sync.Map
+	cleaner    *scheduler.Scheduler
+	defaultTTL time.Duration
+	ttlMutex   sync.RWMutex
+}
+
+func newStringCache[T any]() *stringCache[T] {
+	return &stringCache[T]{
+		cache:      &sync.Map{},
+		cleaner:    scheduler.StartScheduler(),
+		defaultTTL: 0, // No default expiration
+	}
+}
+
+func (c *stringCache[T]) Close() {
+	defer c.cleaner.Stop()
+	defer c.cache.Clear()
+}
+
+func (c *stringCache[T]) set(key string, item stringCacheItem[T]) {
+	c.cache.Store(key, item)
+	var job = scheduler.JobFunction(&stringCleaner{cache: c.cache, key: key})
+	c.cleaner.ScheduleJob(time.Now().Add(item.expiration), job)
+}
+
+// Store - Método público para almacenar un valor con clave específica
+func (c *stringCache[T]) Store(key string, value T, expiration time.Duration) {
+	item := newStringCacheItem(value, expiration)
+	c.set(key, item)
+}
+
+// StoreWithDefaultTTL - Método público para almacenar un valor usando el TTL predefinido
+func (c *stringCache[T]) StoreWithDefaultTTL(key string, value T) {
+	c.ttlMutex.RLock()
+	ttl := c.defaultTTL
+	c.ttlMutex.RUnlock()
+
+	item := newStringCacheItem(value, ttl)
+	c.set(key, item)
+}
+
+// SetDefaultTTL - Establecer tiempo de expiración predefinido para todos los elementos nuevos
+func (c *stringCache[T]) SetDefaultTTL(duration time.Duration) {
+	c.ttlMutex.Lock()
+	defer c.ttlMutex.Unlock()
+	c.defaultTTL = duration
+}
+
+// GetDefaultTTL - Obtener el TTL predefinido actual
+func (c *stringCache[T]) GetDefaultTTL() time.Duration {
+	c.ttlMutex.RLock()
+	defer c.ttlMutex.RUnlock()
+	return c.defaultTTL
+}
+
+func (c *stringCache[T]) get(key string) (stringCacheItem[T], bool) {
+	if item, ok := c.cache.Load(key); ok {
+		var cacheItem stringCacheItem[T] = item.(stringCacheItem[T])
+		return cacheItem, true
+	}
+	return stringCacheItem[T]{}, false
+}
+
+// Load - Método público para obtener un valor del cache
+func (c *stringCache[T]) Load(key string) (T, bool) {
+	if item, ok := c.get(key); ok {
+		return item.getValue(), true
+	}
+	var zero T
+	return zero, false
+}
+
+// Delete - Método público para eliminar una entrada del cache
+func (c *stringCache[T]) Delete(key string) {
+	c.cache.Delete(key)
+}
+
+// Has - Método público para verificar si existe una clave
+func (c *stringCache[T]) Has(key string) bool {
+	_, ok := c.cache.Load(key)
+	return ok
+}
+
+// Range - Método público para iterar sobre todas las entradas del cache
+func (c *stringCache[T]) Range(fn func(key string, value T) bool) {
+	c.cache.Range(func(k, v interface{}) bool {
+		key := k.(string)
+		item := v.(stringCacheItem[T])
+		return fn(key, item.getValue())
+	})
+}
+
+// Keys - Método público para obtener todas las claves
+func (c *stringCache[T]) Keys() []string {
+	var keys []string
+	c.cache.Range(func(k, v interface{}) bool {
+		keys = append(keys, k.(string))
+		return true
+	})
+	return keys
+}
+
+// Values - Método público para obtener todos los valores
+func (c *stringCache[T]) Values() []T {
+	var values []T
+	c.cache.Range(func(k, v interface{}) bool {
+		item := v.(stringCacheItem[T])
+		values = append(values, item.getValue())
+		return true
+	})
+	return values
+}
+
+// GetAll - Método público para obtener un mapa regular (copia) para range tradicional
+func (c *stringCache[T]) GetAll() map[string]T {
+	result := make(map[string]T)
+	c.cache.Range(func(k, v interface{}) bool {
+		key := k.(string)
+		item := v.(stringCacheItem[T])
+		result[key] = item.getValue()
+		return true
+	})
+	return result
+}
+
+// Len - Método público para obtener el número de elementos en el cache
+func (c *stringCache[T]) Len() int {
+	count := 0
+	c.cache.Range(func(k, v interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
+// Generic string cache instance management - privado
+var (
+	stringCacheInstances = make(map[string]any)
+	stringCacheMutex     sync.RWMutex
+)
+
+// StringCache - Interfaz pública que expone solo los métodos necesarios
+type StringCache[T any] interface {
+	Store(key string, value T, expiration time.Duration)
+	StoreWithDefaultTTL(key string, value T)
+	Load(key string) (T, bool)
+	Delete(key string)
+	Has(key string) bool
+	// Métodos de iteración
+	Range(fn func(key string, value T) bool)
+	Keys() []string
+	Values() []T
+	GetAll() map[string]T
+	Len() int
+	// Control de TTL predefinido
+	SetDefaultTTL(duration time.Duration)
+	GetDefaultTTL() time.Duration
+}
+
+// NewStringCache - Función pública para crear una nueva instancia de cache de strings
+func NewStringCache[T any]() StringCache[T] {
+	return newStringCache[T]()
+}
+
+// GetStringCacheInstance - Función pública para obtener una instancia singleton de cache de strings
+func GetStringCacheInstance[T any](cacheType string) StringCache[T] {
+	stringCacheMutex.RLock()
+	if instance, ok := stringCacheInstances[cacheType]; ok {
+		stringCacheMutex.RUnlock()
+		return instance.(*stringCache[T])
+	}
+	stringCacheMutex.RUnlock()
+
+	stringCacheMutex.Lock()
+	defer stringCacheMutex.Unlock()
+
+	// Double check after acquiring write lock
+	if instance, ok := stringCacheInstances[cacheType]; ok {
+		return instance.(*stringCache[T])
+	}
+
+	newCache := newStringCache[T]()
+	stringCacheInstances[cacheType] = newCache
+	return newCache
+}
+
 // List-based cache implementation with automatic list expiration
 
 // listCacheCleaner es para limpiar toda la lista cuando expire
