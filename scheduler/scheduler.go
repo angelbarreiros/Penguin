@@ -2,10 +2,11 @@ package scheduler
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/angelbarreiros/Penguin/logger"
 )
 
 type jobStatus struct {
@@ -44,7 +45,6 @@ var jobCounter uint64
 
 func StartScheduler() *Scheduler {
 	once.Do(initScheduler)
-	log.Println("Scheduled started")
 	return schedulerInstance
 }
 func JobFunction(f JobFuncInterface) *jobFunction {
@@ -150,7 +150,7 @@ func (s *Scheduler) Stop() {
 
 	close(s.chanel)
 	s.wg.Wait()
-	log.Println("Scheduler terminated")
+	logger.GetConsoleLogger().Info("Scheduler stopped")
 }
 func (s *Scheduler) IsRunning() bool {
 	return s.isRunning
@@ -164,7 +164,7 @@ func (s *Scheduler) Pause() {
 	s.stateMux.Lock()
 	defer s.stateMux.Unlock()
 	if s.isRunning {
-		log.Println("Scheduler Paused")
+		logger.GetConsoleLogger().Info("Scheduler Paused")
 		if s.ticker != nil {
 			s.ticker.Stop()
 			s.ticker = nil
@@ -178,7 +178,7 @@ func (s *Scheduler) UnPause() {
 	defer s.stateMux.Unlock()
 
 	if !s.isRunning {
-		log.Println("Scheduler Unpaused")
+		logger.GetConsoleLogger().Info("Scheduler Unpaused")
 		s.isRunning = true
 		if s.ticker != nil {
 			s.ticker.Reset(time.Second)
@@ -192,7 +192,7 @@ func (s *Scheduler) sleep() {
 	s.stateMux.Lock()
 	defer s.stateMux.Unlock()
 	if !s.isSleeping {
-		log.Println("Scheduler sleeps")
+		logger.GetConsoleLogger().Info("Scheduler Sleeps (no jobs)")
 		if s.ticker != nil {
 			s.ticker.Stop()
 		}
@@ -204,7 +204,7 @@ func (s *Scheduler) awake() {
 	s.stateMux.Lock()
 	defer s.stateMux.Unlock()
 	if s.isSleeping {
-		log.Println("Scheduler awakes")
+		logger.GetConsoleLogger().Info("Scheduler awakes")
 		s.ticker.Reset(time.Second)
 		s.isRunning = true
 		s.isSleeping = false
@@ -220,7 +220,7 @@ func initScheduler() {
 		isRunning:  true,
 		isSleeping: false,
 	}
-
+	logger.GetConsoleLogger().Info("Scheduler initialized")
 	schedulerInstance.wg.Add(1)
 	go schedulerInstance.schedulerLoop()
 
