@@ -3,6 +3,7 @@ package helpers
 import (
 	"database/sql"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -93,4 +94,64 @@ func GetNullStringQueryParam(queryParameter string, r *http.Request) (sql.NullSt
 		return sql.NullString{Valid: false}, nil
 	}
 	return sql.NullString{String: id, Valid: true}, nil
+}
+
+func GetNullByteQueryParam(queryParameter string, r *http.Request) (sql.NullByte, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
+	if id == "" {
+		return sql.NullByte{Valid: false}, nil
+	}
+	if !numericRegex.MatchString(id) {
+		return sql.NullByte{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "byte")
+	}
+	idInt, err := strconv.ParseUint(id, 10, 8)
+	if err != nil {
+		return sql.NullByte{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "byte")
+	}
+	return sql.NullByte{Byte: byte(idInt), Valid: true}, nil
+}
+
+func GetNullFloat64QueryParam(queryParameter string, r *http.Request) (sql.NullFloat64, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
+	if id == "" {
+		return sql.NullFloat64{Valid: false}, nil
+	}
+	if !numericRegex.MatchString(id) && !regexp.MustCompile(`^[0-9]*\.?[0-9]+$`).MatchString(id) {
+		return sql.NullFloat64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
+	}
+	idFloat, err := strconv.ParseFloat(id, 64)
+	if err != nil {
+		return sql.NullFloat64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
+	}
+	return sql.NullFloat64{Float64: idFloat, Valid: true}, nil
+}
+
+func GetNullInt16QueryParam(queryParameter string, r *http.Request) (sql.NullInt16, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
+	if id == "" {
+		return sql.NullInt16{Valid: false}, nil
+	}
+	if !numericRegex.MatchString(id) {
+		return sql.NullInt16{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int16")
+	}
+	idInt, err := strconv.ParseInt(id, 10, 16)
+	if err != nil {
+		return sql.NullInt16{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int16")
+	}
+	return sql.NullInt16{Int16: int16(idInt), Valid: true}, nil
+}
+
+func GetNullInt32QueryParam(queryParameter string, r *http.Request) (sql.NullInt32, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
+	if id == "" {
+		return sql.NullInt32{Valid: false}, nil
+	}
+	if !numericRegex.MatchString(id) {
+		return sql.NullInt32{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int32")
+	}
+	idInt, err := strconv.ParseInt(id, 10, 32)
+	if err != nil {
+		return sql.NullInt32{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int32")
+	}
+	return sql.NullInt32{Int32: int32(idInt), Valid: true}, nil
 }

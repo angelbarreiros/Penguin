@@ -2,7 +2,7 @@ package helpers
 
 import "regexp"
 
-var numericRegex = regexp.MustCompile(`^[1-9]\d*$`)
+var numericRegex = regexp.MustCompile(`^0|[1-9]\d*$`)
 var sanitizeRegex = regexp.MustCompile(`[';<>]|--|/\*|\*/`)
 var boolRegex = regexp.MustCompile(`^(true|false)$`)
 
