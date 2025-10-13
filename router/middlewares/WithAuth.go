@@ -33,9 +33,9 @@ func authMiddleWareFunc(auth auth.PlainAuthInterface) middlewareFunc {
 				w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
 				return
 			}
-			var ctx, cancel = context.WithTimeout(context.Background(), auth.GetTimeout())
+			var ctx, cancel = context.WithTimeout(r.Context(), auth.GetTimeout())
 			defer cancel()
-			ctx = context.WithValue(r.Context(), auth.GetContextKey(), user)
+			ctx = context.WithValue(ctx, auth.GetContextKey(), user)
 			r = r.WithContext(ctx)
 			hf(w, r)
 		}
@@ -60,7 +60,7 @@ func WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf http.Ha
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), authType.GetTimeout())
+		ctx, cancel := context.WithTimeout(r.Context(), authType.GetTimeout())
 		defer cancel()
 		ctx = context.WithValue(ctx, authType.GetContextKey(), user)
 		r = r.WithContext(ctx)
