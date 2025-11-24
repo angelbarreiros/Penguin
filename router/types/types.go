@@ -168,39 +168,6 @@ func (dr DateRange) String() string {
 	return dr.Start.Format("2006-01-02") + " to " + dr.End.Format("2006-01-02")
 }
 
-// MarshalJSON implements json.Marshaler
-func (dr DateRange) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]string{
-		"start": dr.Start.Format("2006-01-02"),
-		"end":   dr.End.Format("2006-01-02"),
-	})
-}
-
-// UnmarshalJSON implements json.Unmarshaler
-func (dr *DateRange) UnmarshalJSON(data []byte) error {
-	var aux struct {
-		Start string `json:"start"`
-		End   string `json:"end"`
-	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	start, err := time.Parse("2006-01-02", aux.Start)
-	if err != nil {
-		return err
-	}
-
-	end, err := time.Parse("2006-01-02", aux.End)
-	if err != nil {
-		return err
-	}
-
-	dr.Start = start
-	dr.End = end
-	return nil
-}
-
 // Split splits the date range into chunks of specified days
 func (dr DateRange) Split(days int) []DateRange {
 	var ranges []DateRange
