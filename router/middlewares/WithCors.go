@@ -20,8 +20,18 @@ func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
 				hf(w, r)
 				return
 			}
+
+			origin := r.Header.Get("Origin")
+			allowAllOrigins := slices.Contains(corrsConfig.AllowedOrigins(), cors.AllowAllOrigin)
+
 			if r.Method == http.MethodOptions {
-				w.Header().Set("Access-Control-Allow-Origin", strings.Join(corrsConfig.AllowedOrigins(), ","))
+				// For OPTIONS: echo back the actual origin if allowed, or "*" if all origins allowed
+				if allowAllOrigins {
+					w.Header().Set("Access-Control-Allow-Origin", cors.AllowAllOrigin)
+				} else if origin != "" && slices.Contains(corrsConfig.AllowedOrigins(), origin) {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+				}
+
 				w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
 				w.Header().Set("Access-Control-Max-Age", strconv.Itoa(corrsConfig.MaxAge()))
 				if corrsConfig.AllowCredentials() {
@@ -38,18 +48,25 @@ func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
 				return
 			}
 
-			var origin string = r.Header.Get("Origin")
-			var allAllowedOrigin bool = slices.Contains(corrsConfig.AllowedOrigins(), cors.AllowAllOrigin)
-			if !allAllowedOrigin {
-				if strings.TrimSpace(origin) == "" || !slices.Contains(corrsConfig.AllowedOrigins(), origin) {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusForbidden)
-					w.Write([]byte(`{"error": "Origin not allowed"}`))
-					return
-				}
-
+			// For regular requests: empty origin is allowed (same-origin or non-browser tools)
+			// Only reject if origin is non-empty AND not in allowed list
+			if !allowAllOrigins && origin != "" && !slices.Contains(corrsConfig.AllowedOrigins(), origin) {
+				// Add CORS headers to error response so browser can read it
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte(`{"error": "Origin not allowed"}`))
+				return
 			}
-			w.Header().Set("Access-Control-Allow-Origin", origin)
+
+			// Set CORS headers for allowed requests
+			if allowAllOrigins {
+				w.Header().Set("Access-Control-Allow-Origin", cors.AllowAllOrigin)
+			} else if origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+
 			w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
 			w.Header().Set("Access-Control-Max-Age", strconv.Itoa(corrsConfig.MaxAge()))
 			if corrsConfig.AllowCredentials() {

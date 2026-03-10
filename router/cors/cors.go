@@ -1,5 +1,11 @@
 package cors
 
+import (
+	"slices"
+
+	"github.com/angelbarreiros/Penguin/logger"
+)
+
 const (
 	AllowAllOrigin = "*"
 )
@@ -54,6 +60,13 @@ func NewCORSConfig(options ...func(*CORSConfig)) *CORSConfig {
 
 	for _, option := range options {
 		option(config)
+	}
+
+	// Validate: AllowAllOrigin (*) + AllowCredentials = true is invalid per CORS spec
+	if config.allowCredentials && len(config.allowedOrigins) > 0 {
+		if slices.Contains(config.allowedOrigins, AllowAllOrigin) {
+			logger.GetConsoleLogger().Warn("CORS Configuration Warning: AllowAllOrigin (*) with AllowCredentials=true is invalid per CORS spec. Browsers will ignore credentials. Consider using a specific list of allowed origins with credentials.")
+		}
 	}
 
 	return config
