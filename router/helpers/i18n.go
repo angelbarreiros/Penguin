@@ -31,30 +31,47 @@ func SetDirectory(directory string) i18nFunctions {
 		i.DefaultDirectory = directory
 	}
 }
-func GetI18nInstance(...i18nFunctions) *i18n {
+func GetI18nInstance(fns ...i18nFunctions) *i18n {
 	if instancei18n == nil {
 		oncei18n.Do(func() {
 			instancei18n = &i18n{
 				DefaultLocale:    "en",
 				DefaultDirectory: "i18n",
 			}
-			for _, fn := range []i18nFunctions{} {
+			for _, fn := range fns {
 				fn(instancei18n)
 			}
 		})
 	}
 	return instancei18n
-
 }
+
+// TranslateFromAcceptLanguage traduce una clave basada en el header Accept-Language
+func (i i18n) TranslateFromAcceptLanguage(key string, r *http.Request) string {
+	language := i.GetLanguage(r)
+	return i.translateWithLanguage(key, language)
+}
+
+// TranslateFromParam traduce una clave usando el idioma proporcionado como parámetro
+func (i i18n) TranslateFromParam(key string, language string) string {
+	return i.translateWithLanguage(key, language)
+}
+
+// Translate mantiene compatibilidad con versiones anteriores
 func (i i18n) Translate(key string, r *http.Request) string {
+	return i.TranslateFromAcceptLanguage(key, r)
+}
+
+// translateWithLanguage realiza la lógica común de traducción para un lenguaje específico
+func (i i18n) translateWithLanguage(key string, language string) string {
 	var sb strings.Builder
 
-	sb.WriteString(i.GetLanguage(r))
+	sb.WriteString(language)
 	sb.WriteString(".json")
 	var i18nFilePath string = filepath.Join(i.DefaultDirectory, sb.String())
 
 	if _, err := os.Stat(i18nFilePath); os.IsNotExist(err) {
-		return defaultTranslate(key, i.DefaultLocale)
+		return i.translateFromDefault(key)
 	}
 	file, err := os.Open(i18nFilePath)
 	if err != nil {
@@ -71,14 +88,16 @@ func (i i18n) Translate(key string, r *http.Request) string {
 		return value
 	}
 
-	return key
+	return i.translateFromDefault(key)
 }
-func defaultTranslate(key, locale string) string {
+
+// translateFromDefault busca la traducción en el archivo del idioma por defecto
+func (i i18n) translateFromDefault(key string) string {
 	var sb strings.Builder
 
-	sb.WriteString(locale)
+	sb.WriteString(i.DefaultLocale)
 	sb.WriteString(".json")
-	var defaultFilePath string = filepath.Join(instancei18n.DefaultDirectory, sb.String())
+	var defaultFilePath string = filepath.Join(i.DefaultDirectory, sb.String())
 
 	if _, err := os.Stat(defaultFilePath); os.IsNotExist(err) {
 		return key
