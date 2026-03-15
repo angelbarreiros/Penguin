@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func SendSuccessResponse(w http.ResponseWriter, data any, r *http.Request) {
+func SendSuccessResponse(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if data != nil {
@@ -20,7 +20,63 @@ func SendSuccessResponse(w http.ResponseWriter, data any, r *http.Request) {
 		w.Write(jsonBytes)
 	}
 }
-func SendValidationErrorResponse(w http.ResponseWriter, errors []string, r *http.Request) {
+func SendValidationErrorResponse(w http.ResponseWriter, errors []string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+
+	var validErrors []string
+	for _, err := range errors {
+		if strings.TrimSpace(err) != "" {
+			validErrors = append(validErrors, err)
+		}
+	}
+
+	response := map[string][]string{"error": validErrors}
+	jsonBytes, err := json.Marshal(response)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "` + err.Error() + `"}`))
+		return
+	}
+	w.Write(jsonBytes)
+}
+func SendErrorResponse(w http.ResponseWriter, statusCode int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	response := map[string]string{"error": message}
+	jsonBytes, err := json.Marshal(response)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "` + err.Error() + `"}`))
+		return
+	}
+	w.Write(jsonBytes)
+}
+
+func SendNoContentResponse(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Versiones con traducción automática
+
+func SendI18NSuccessResponse(w http.ResponseWriter, data any, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if data != nil {
+		jsonBytes, err := json.Marshal(data)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "` + err.Error() + `"}`))
+			return
+		}
+		w.Write(jsonBytes)
+	}
+}
+
+func SendI18NValidationErrorResponse(w http.ResponseWriter, errors []string, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
 
@@ -46,7 +102,8 @@ func SendValidationErrorResponse(w http.ResponseWriter, errors []string, r *http
 	}
 	w.Write(jsonBytes)
 }
-func SendErrorResponse(w http.ResponseWriter, statusCode int, message string, r *http.Request) {
+
+func SendI18NErrorResponse(w http.ResponseWriter, statusCode int, message string, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
@@ -65,8 +122,4 @@ func SendErrorResponse(w http.ResponseWriter, statusCode int, message string, r 
 		return
 	}
 	w.Write(jsonBytes)
-}
-
-func SendNoContentResponse(w http.ResponseWriter) {
-	w.WriteHeader(http.StatusNoContent)
 }
