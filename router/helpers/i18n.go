@@ -2,9 +2,11 @@ package helpers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -47,19 +49,21 @@ func GetI18nInstance(fns ...i18nFunctions) *i18n {
 }
 
 // TranslateFromAcceptLanguage traduce una clave basada en el header Accept-Language
-func (i i18n) TranslateFromAcceptLanguage(key string, r *http.Request) string {
+func (i i18n) TranslateFromAcceptLanguage(r *http.Request, key string) string {
 	language := i.GetLanguage(r)
 	return i.translateWithLanguage(key, language)
 }
 
-// TranslateFromParam traduce una clave usando el idioma proporcionado como parámetro
-func (i i18n) TranslateFromParam(key string, language string) string {
-	return i.translateWithLanguage(key, language)
+// TranslateFromAcceptLanguageWithVars traduce una clave con variables {{0}}, {{1}}, etc.
+func (i i18n) TranslateFromAcceptLanguageWithVars(r *http.Request, key string, args ...any) string {
+	language := i.GetLanguage(r)
+	translation := i.translateWithLanguage(key, language)
+	return i.replaceVariables(translation, args...)
 }
 
 // Translate mantiene compatibilidad con versiones anteriores
-func (i i18n) Translate(key string, r *http.Request) string {
-	return i.TranslateFromAcceptLanguage(key, r)
+func (i i18n) Translate(r *http.Request, key string) string {
+	return i.TranslateFromAcceptLanguage(r, key)
 }
 
 // translateWithLanguage realiza la lógica común de traducción para un lenguaje específico
@@ -118,6 +122,16 @@ func (i i18n) translateFromDefault(key string) string {
 	}
 
 	return key
+}
+
+// replaceVariables reemplaza {{0}}, {{1}}, etc. con los valores proporcionados
+func (i i18n) replaceVariables(text string, args ...any) string {
+	result := text
+	for idx, arg := range args {
+		placeholder := "{{" + strconv.Itoa(idx) + "}}"
+		result = strings.ReplaceAll(result, placeholder, fmt.Sprint(arg))
+	}
+	return result
 }
 func (i i18n) GetLanguage(r *http.Request) string {
 	al := r.Header.Get("Accept-Language")
