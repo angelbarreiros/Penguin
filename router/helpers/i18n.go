@@ -61,9 +61,13 @@ func (i i18n) TranslateFromAcceptLanguageWithVars(r *http.Request, key string, a
 	return i.replaceVariables(translation, args...)
 }
 
-// Translate mantiene compatibilidad con versiones anteriores
-func (i i18n) Translate(r *http.Request, key string) string {
-	return i.TranslateFromAcceptLanguage(r, key)
+// TranslateWithLanguage traduce una clave usando solo key + language, sin request.
+func (i i18n) TranslateWithLanguage(key string, language string) string {
+	if len(language) < 2 {
+		language = i.DefaultLocale
+	}
+	language = strings.ToLower(language[:2])
+	return i.translateWithLanguage(key, language)
 }
 
 // translateWithLanguage realiza la lógica común de traducción para un lenguaje específico
