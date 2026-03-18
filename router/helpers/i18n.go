@@ -87,12 +87,12 @@ func (i i18n) translateWithLanguage(key string, language string) string {
 	}
 	defer file.Close()
 
-	var translations map[string]string
+	var translations map[string]any
 	if err := json.NewDecoder(file).Decode(&translations); err != nil {
 		return key
 	}
 
-	if value, exists := translations[key]; exists {
+	if value, exists := i.lookupTranslation(translations, key); exists {
 		return value
 	}
 
@@ -116,12 +116,12 @@ func (i i18n) translateFromDefault(key string) string {
 	}
 	defer file.Close()
 
-	var translations map[string]string
+	var translations map[string]any
 	if err := json.NewDecoder(file).Decode(&translations); err != nil {
 		return key
 	}
 
-	if value, exists := translations[key]; exists {
+	if value, exists := i.lookupTranslation(translations, key); exists {
 		return value
 	}
 
@@ -137,6 +137,44 @@ func (i i18n) replaceVariables(text string, args ...any) string {
 	}
 	return result
 }
+
+// lookupTranslation supports both flat keys and dot-separated nested object paths.
+func (i i18n) lookupTranslation(translations map[string]any, key string) (string, bool) {
+	if directValue, exists := translations[key]; exists {
+		if stringValue, ok := directValue.(string); ok {
+			return stringValue, true
+		}
+	}
+
+	if !strings.Contains(key, ".") {
+		return "", false
+	}
+
+	parts := strings.Split(key, ".")
+	var current any = translations
+
+	for _, part := range parts {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return "", false
+		}
+
+		next, exists := object[part]
+		if !exists {
+			return "", false
+		}
+
+		current = next
+	}
+
+	stringValue, ok := current.(string)
+	if !ok {
+		return "", false
+	}
+
+	return stringValue, true
+}
+
 func (i i18n) GetLanguage(r *http.Request) string {
 	al := r.Header.Get("Accept-Language")
 	if al == "" {
