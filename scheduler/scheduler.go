@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"container/heap"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -9,347 +10,667 @@ import (
 	"github.com/angelbarreiros/Penguin/logger"
 )
 
+type jobMode uint8
+
+const (
+	jobModeOneTime jobMode = iota
+	jobModeInterval
+	jobModeEveryXDaysAt
+)
+
 type jobStatus struct {
-	state       int16 // "running" : 1 , "paused" 0:  "failed" : -1
+	state       int16 // "running" : 1 , "paused" 0: "failed" : -1
 	nextRunTime time.Time
 }
+
 type Scheduler struct {
-	chanel     chan job
-	ticker     *time.Ticker
-	stateMux   sync.RWMutex // Solo para estado del scheduler
-	jobs       *sync.Map    // Cambio a sync.Map
-	wg         *sync.WaitGroup
+	stateMux sync.RWMutex
+
+	jobs  map[uint64]*job
+	queue jobPriorityQueue
+	chMap sync.Map
+
+	commandCh chan schedulerCommand
+	done      chan struct{}
+	wg        sync.WaitGroup
+
 	isRunning  bool
 	isSleeping bool
+	stopped    bool
 }
+
 type JobFuncInterface interface {
 	Execute() []any
 }
+
 type jobFunction struct {
 	function      JobFuncInterface
 	returnChannel chan []any
-}
-type job struct {
-	id          uint64
-	mode        uint16 // 0 = one time, 1 = interval
-	when        time.Time
-	interval    time.Duration
-	nextRun     time.Time
-	jobFunction *jobFunction
-	jobStatus   jobStatus
+	closeOnce     sync.Once
 }
 
-var schedulerInstance *Scheduler = nil
-var once sync.Once
+type job struct {
+	id           uint64
+	mode         jobMode
+	when         time.Time
+	interval     time.Duration
+	daysInterval int
+	timeOfDay    time.Duration
+	nextRun      time.Time
+	heapIndex    int
+	jobFunction  *jobFunction
+	jobStatus    jobStatus
+}
+
+type schedulerCommandType uint8
+
+const (
+	cmdAddJob schedulerCommandType = iota
+	cmdRemoveJob
+	cmdPauseJob
+	cmdUnpauseJob
+	cmdPauseScheduler
+	cmdUnpauseScheduler
+	cmdStopScheduler
+)
+
+type schedulerCommand struct {
+	typ schedulerCommandType
+	id  uint64
+	job *job
+
+	respErr chan error
+	respAck chan struct{}
+}
+
+type jobPriorityQueue []*job
+
+func (q jobPriorityQueue) Len() int { return len(q) }
+
+func (q jobPriorityQueue) Less(i, j int) bool {
+	return q[i].nextRun.Before(q[j].nextRun)
+}
+
+func (q jobPriorityQueue) Swap(i, j int) {
+	q[i], q[j] = q[j], q[i]
+	q[i].heapIndex = i
+	q[j].heapIndex = j
+}
+
+func (q *jobPriorityQueue) Push(x any) {
+	item := x.(*job)
+	item.heapIndex = len(*q)
+	*q = append(*q, item)
+}
+
+func (q *jobPriorityQueue) Pop() any {
+	old := *q
+	n := len(old)
+	item := old[n-1]
+	item.heapIndex = -1
+	*q = old[:n-1]
+	return item
+}
+
+var schedulerInstance *Scheduler
+var schedulerInstanceMux sync.Mutex
 var jobCounter uint64
 
 func StartScheduler() *Scheduler {
-	once.Do(initScheduler)
+	schedulerInstanceMux.Lock()
+	defer schedulerInstanceMux.Unlock()
+
+	if schedulerInstance == nil || schedulerInstance.isStopped() {
+		schedulerInstance = newScheduler()
+	}
+
 	return schedulerInstance
 }
+
 func JobFunction(f JobFuncInterface) *jobFunction {
-	return &jobFunction{
-		function: f,
-	}
+	return &jobFunction{function: f}
 }
+
 func (j *jobFunction) WithReturnChannel() (*jobFunction, chan []any) {
 	returnChannel := make(chan []any, 1)
 	j.returnChannel = returnChannel
+	j.closeOnce = sync.Once{}
 	return j, j.returnChannel
-
 }
-func (s *Scheduler) ScheduleJob(when time.Time, jobFunction *jobFunction) (uint64, error) {
-	if when.Before(time.Now()) {
-		return 0, fmt.Errorf("job time cannot be in the past")
+
+func (s *Scheduler) ScheduleProgrammedOneTimeJob(when time.Time, jobFunction *jobFunction) (uint64, error) {
+	if !when.After(time.Now()) {
+		return 0, fmt.Errorf("job time must be in the future")
 	}
-	if jobFunction == nil {
+	if jobFunction == nil || jobFunction.function == nil {
 		return 0, fmt.Errorf("job function cannot be nil")
 	}
 
-	var id uint64 = atomic.AddUint64(&jobCounter, 1)
-
-	var job job = job{
-		mode:        0,
+	id := atomic.AddUint64(&jobCounter, 1)
+	newJob := &job{
 		id:          id,
+		mode:        jobModeOneTime,
 		when:        when,
+		nextRun:     when,
+		heapIndex:   -1,
 		jobFunction: jobFunction,
-		jobStatus: jobStatus{
-			state:       1,
-			nextRunTime: when,
-		},
+		jobStatus:   jobStatus{state: 1, nextRunTime: when},
 	}
-	s.jobs.Store(job.id, &job)
-	s.chanel <- job
+
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdAddJob, job: newJob, respErr: resp}); err != nil {
+		return 0, err
+	}
+	if err := <-resp; err != nil {
+		return 0, err
+	}
 
 	return id, nil
 }
+
+func (s *Scheduler) ScheduleOneTimeJob(delay time.Duration, jobFunction *jobFunction) (uint64, error) {
+	if delay <= 0 {
+		return 0, fmt.Errorf("delay must be greater than zero")
+	}
+	return s.ScheduleProgrammedOneTimeJob(time.Now().Add(delay), jobFunction)
+}
+
 func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, jobFunction *jobFunction) (uint64, error) {
 	if interval <= 0 {
 		return 0, fmt.Errorf("interval must be greater than zero")
 	}
-
-	var id uint64 = atomic.AddUint64(&jobCounter, 1)
-	var intervalJob job = job{
-		mode:        1,
-		id:          id,
-		interval:    interval,
-		nextRun:     time.Now().Add(interval),
-		jobFunction: jobFunction,
-		jobStatus: jobStatus{
-			state:       1,
-			nextRunTime: time.Now().Add(interval),
-		},
+	if jobFunction == nil || jobFunction.function == nil {
+		return 0, fmt.Errorf("job function cannot be nil")
 	}
-	s.jobs.Store(intervalJob.id, &intervalJob)
-	s.chanel <- intervalJob
+
+	id := atomic.AddUint64(&jobCounter, 1)
+	nextRun := time.Now().Add(interval)
+	intervalJob := &job{
+		id:          id,
+		mode:        jobModeInterval,
+		interval:    interval,
+		nextRun:     nextRun,
+		heapIndex:   -1,
+		jobFunction: jobFunction,
+		jobStatus:   jobStatus{state: 1, nextRunTime: nextRun},
+	}
+
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdAddJob, job: intervalJob, respErr: resp}); err != nil {
+		return 0, err
+	}
+	if err := <-resp; err != nil {
+		return 0, err
+	}
+
 	return id, nil
 }
+
+func (s *Scheduler) ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, jobFunction *jobFunction) (uint64, error) {
+	if everyXDays <= 0 {
+		return 0, fmt.Errorf("days must be greater than zero")
+	}
+	if jobFunction == nil || jobFunction.function == nil {
+		return 0, fmt.Errorf("job function cannot be nil")
+	}
+
+	id := atomic.AddUint64(&jobCounter, 1)
+	hour, minute, second := at.Clock()
+	timeOfDay := time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute + time.Duration(second)*time.Second + time.Duration(at.Nanosecond())
+	nextRun := nextRunEveryXDaysAt(time.Now(), everyXDays, timeOfDay)
+
+	periodicAtJob := &job{
+		id:           id,
+		mode:         jobModeEveryXDaysAt,
+		daysInterval: everyXDays,
+		timeOfDay:    timeOfDay,
+		nextRun:      nextRun,
+		heapIndex:    -1,
+		jobFunction:  jobFunction,
+		jobStatus:    jobStatus{state: 1, nextRunTime: nextRun},
+	}
+
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdAddJob, job: periodicAtJob, respErr: resp}); err != nil {
+		return 0, err
+	}
+	if err := <-resp; err != nil {
+		return 0, err
+	}
+
+	return id, nil
+}
+
 func (s *Scheduler) RemoveJob(id uint64) error {
 	if id == 0 {
 		return fmt.Errorf("job id cannot be empty")
 	}
-	if err := s.removeById(id); err != nil {
+
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdRemoveJob, id: id, respErr: resp}); err != nil {
 		return err
 	}
 
-	return nil
+	return <-resp
 }
+
 func (s *Scheduler) PauseJob(id uint64) error {
 	if id == 0 {
 		return fmt.Errorf("job id cannot be empty")
 	}
-	if err := s.pauseById(id); err != nil {
+
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdPauseJob, id: id, respErr: resp}); err != nil {
 		return err
 	}
 
-	return nil
+	return <-resp
 }
+
 func (s *Scheduler) UnPauseJob(id uint64) error {
 	if id == 0 {
 		return fmt.Errorf("job id cannot be empty")
 	}
-	if err := s.unPauseById(id); err != nil {
+
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdUnpauseJob, id: id, respErr: resp}); err != nil {
 		return err
 	}
 
-	return nil
+	return <-resp
 }
+
 func (s *Scheduler) GetChannel(id uint64) chan []any {
-	if jobInterface, exists := s.jobs.Load(id); exists {
-		if job := jobInterface.(*job); job.jobFunction != nil {
-			return job.jobFunction.returnChannel
+	if ch, exists := s.chMap.Load(id); exists {
+		if typed, ok := ch.(chan []any); ok {
+			return typed
 		}
 	}
+
 	return nil
 }
-func (s *Scheduler) Stop() {
-	if s.ticker != nil {
-		s.ticker.Stop()
-		s.ticker = nil
-	}
 
-	close(s.chanel)
+func (s *Scheduler) Stop() {
+	ack := make(chan struct{}, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdStopScheduler, respAck: ack}); err != nil {
+		return
+	}
+	<-ack
 	s.wg.Wait()
+
+	schedulerInstanceMux.Lock()
+	if schedulerInstance == s {
+		schedulerInstance = nil
+	}
+	schedulerInstanceMux.Unlock()
+
 	logger.GetConsoleLogger().Info("Scheduler stopped")
 }
+
 func (s *Scheduler) IsRunning() bool {
+	s.stateMux.RLock()
+	defer s.stateMux.RUnlock()
 	return s.isRunning
 }
 
-// Pause stops the Scheduler's ticker and sets its state to not running.
-// This effectively pauses the Scheduler, similar to turning it off and on again,
-// which may use more memory as resources are reallocated when resumed.
-// Note: The Scheduler will sleep if there are no jobs currently running.
 func (s *Scheduler) Pause() {
-	s.stateMux.Lock()
-	defer s.stateMux.Unlock()
-	if s.isRunning {
-		logger.GetConsoleLogger().Info("Scheduler Paused")
-		if s.ticker != nil {
-			s.ticker.Stop()
-			s.ticker = nil
-		}
-		s.isRunning = false
-		s.isSleeping = false
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdPauseScheduler, respErr: resp}); err != nil {
+		return
 	}
+	_ = <-resp
 }
-func (s *Scheduler) UnPause() {
-	s.stateMux.Lock()
-	defer s.stateMux.Unlock()
 
-	if !s.isRunning {
-		logger.GetConsoleLogger().Info("Scheduler Unpaused")
-		s.isRunning = true
-		if s.ticker != nil {
-			s.ticker.Reset(time.Second)
-		} else {
-			s.ticker = time.NewTicker(time.Second)
-		}
-		s.isSleeping = false
+func (s *Scheduler) UnPause() {
+	resp := make(chan error, 1)
+	if err := s.submitCommand(schedulerCommand{typ: cmdUnpauseScheduler, respErr: resp}); err != nil {
+		return
 	}
+	_ = <-resp
 }
-func (s *Scheduler) sleep() {
+
+func (s *Scheduler) sleepLocked() {
 	s.stateMux.Lock()
 	defer s.stateMux.Unlock()
 	if !s.isSleeping {
 		logger.GetConsoleLogger().Info("Scheduler Sleeps (no jobs)")
-		if s.ticker != nil {
-			s.ticker.Stop()
-		}
-		s.isRunning = false
 		s.isSleeping = true
 	}
 }
-func (s *Scheduler) awake() {
+
+func (s *Scheduler) awakeLocked() {
 	s.stateMux.Lock()
 	defer s.stateMux.Unlock()
 	if s.isSleeping {
 		logger.GetConsoleLogger().Info("Scheduler awakes")
-		s.ticker.Reset(time.Second)
-		s.isRunning = true
 		s.isSleeping = false
 	}
-
 }
-func initScheduler() {
-	schedulerInstance = &Scheduler{
-		chanel:     make(chan job),
-		jobs:       &sync.Map{},
-		ticker:     time.NewTicker(1 * time.Second),
-		wg:         new(sync.WaitGroup),
+
+func newScheduler() *Scheduler {
+	s := &Scheduler{
+		jobs:       make(map[uint64]*job),
+		queue:      make(jobPriorityQueue, 0),
+		commandCh:  make(chan schedulerCommand),
+		done:       make(chan struct{}),
 		isRunning:  true,
-		isSleeping: false,
+		isSleeping: true,
+		stopped:    false,
 	}
+	heap.Init(&s.queue)
+
 	logger.GetConsoleLogger().Info("Scheduler initialized")
-	schedulerInstance.wg.Add(1)
-	go schedulerInstance.schedulerLoop()
+	s.wg.Add(1)
+	go s.schedulerLoop()
 
+	return s
 }
-func (s *Scheduler) schedulerLoop() {
-	for {
-		select {
-		case <-s.getTickerChannel():
-			s.processJobs()
 
-		case _, ok := <-s.chanel:
-			if !ok {
-				s.stateMux.Lock()
-				s.wg.Done()
-				s.stateMux.Unlock()
+func (s *Scheduler) submitCommand(cmd schedulerCommand) error {
+	s.stateMux.RLock()
+	stopped := s.stopped
+	s.stateMux.RUnlock()
+	if stopped {
+		return fmt.Errorf("scheduler stopped")
+	}
+
+	select {
+	case s.commandCh <- cmd:
+		return nil
+	case <-s.done:
+		return fmt.Errorf("scheduler stopped")
+	}
+}
+
+func (s *Scheduler) isStopped() bool {
+	s.stateMux.RLock()
+	defer s.stateMux.RUnlock()
+	return s.stopped
+}
+
+func (s *Scheduler) schedulerLoop() {
+	defer s.wg.Done()
+
+	var timer *time.Timer
+	for {
+		s.stateMux.RLock()
+		running := s.isRunning
+		stopped := s.stopped
+		s.stateMux.RUnlock()
+
+		if stopped {
+			if timer != nil {
+				stopAndDrainTimer(timer)
+			}
+			return
+		}
+
+		if !running || len(s.queue) == 0 {
+			if len(s.queue) == 0 {
+				s.sleepLocked()
+			}
+
+			cmd := <-s.commandCh
+			if s.handleCommand(cmd) {
+				if timer != nil {
+					stopAndDrainTimer(timer)
+				}
 				return
 			}
-			s.stateMux.RLock()
-			isSleeping := s.isSleeping
-			s.stateMux.RUnlock()
-			if isSleeping {
-				s.awake()
+			continue
+		}
+
+		s.awakeLocked()
+		next := s.queue[0].nextRun
+		wait := max(time.Until(next), 0)
+
+		if timer == nil {
+			timer = time.NewTimer(wait)
+		} else {
+			stopAndDrainTimer(timer)
+			timer.Reset(wait)
+		}
+
+		select {
+		case <-timer.C:
+			s.executeDueJobs()
+		case cmd := <-s.commandCh:
+			if s.handleCommand(cmd) {
+				if timer != nil {
+					stopAndDrainTimer(timer)
+				}
+				return
 			}
 		}
 	}
 }
-func (s *Scheduler) getTickerChannel() <-chan time.Time {
-	s.stateMux.RLock()
-	defer s.stateMux.RUnlock()
-	if s.ticker != nil {
-		return s.ticker.C
+
+func (s *Scheduler) handleCommand(cmd schedulerCommand) bool {
+	switch cmd.typ {
+	case cmdAddJob:
+		s.addJob(cmd.job)
+		if cmd.respErr != nil {
+			cmd.respErr <- nil
+		}
+
+	case cmdRemoveJob:
+		cmd.respErr <- s.removeById(cmd.id)
+
+	case cmdPauseJob:
+		cmd.respErr <- s.pauseById(cmd.id)
+
+	case cmdUnpauseJob:
+		cmd.respErr <- s.unPauseById(cmd.id)
+
+	case cmdPauseScheduler:
+		s.stateMux.Lock()
+		if s.isRunning {
+			logger.GetConsoleLogger().Info("Scheduler Paused")
+			s.isRunning = false
+		}
+		s.stateMux.Unlock()
+		if cmd.respErr != nil {
+			cmd.respErr <- nil
+		}
+
+	case cmdUnpauseScheduler:
+		s.stateMux.Lock()
+		if !s.isRunning && !s.stopped {
+			logger.GetConsoleLogger().Info("Scheduler Unpaused")
+			s.isRunning = true
+		}
+		s.stateMux.Unlock()
+		if cmd.respErr != nil {
+			cmd.respErr <- nil
+		}
+
+	case cmdStopScheduler:
+		s.stateMux.Lock()
+		s.stopped = true
+		s.isRunning = false
+		s.stateMux.Unlock()
+
+		for _, j := range s.jobs {
+			if j.jobFunction != nil {
+				j.jobFunction.closeReturnChannel()
+			}
+			s.chMap.Delete(j.id)
+		}
+		s.jobs = make(map[uint64]*job)
+		s.queue = s.queue[:0]
+
+		select {
+		case <-s.done:
+		default:
+			close(s.done)
+		}
+
+		if cmd.respAck != nil {
+			cmd.respAck <- struct{}{}
+		}
+
+		return true
 	}
-	return make(<-chan time.Time)
+
+	return false
 }
-func (s *Scheduler) processJobs() {
-	s.stateMux.RLock()
-	isRunning := s.isRunning
-	isSleeping := s.isSleeping
-	s.stateMux.RUnlock()
 
-	// Check if we need to sleep (no jobs available)
-	jobCount := 0
-	s.jobs.Range(func(key, value interface{}) bool {
-		jobCount++
-		return false // Stop after first job found
-	})
+func (s *Scheduler) addJob(j *job) {
+	s.jobs[j.id] = j
+	if j.jobFunction != nil && j.jobFunction.returnChannel != nil {
+		s.chMap.Store(j.id, j.jobFunction.returnChannel)
+	}
+	if j.jobStatus.state != 0 {
+		heap.Push(&s.queue, j)
+	}
+}
 
-	if jobCount == 0 && isRunning && !isSleeping {
-		s.sleep()
+func (s *Scheduler) executeDueJobs() {
+	now := time.Now()
+
+	for len(s.queue) > 0 {
+		nextJob := s.queue[0]
+		if nextJob.nextRun.After(now) {
+			break
+		}
+
+		heap.Pop(&s.queue)
+
+		storedJob, exists := s.jobs[nextJob.id]
+		if !exists || storedJob.jobStatus.state == 0 {
+			continue
+		}
+
+		closeChannel := storedJob.mode == jobModeOneTime
+		go storedJob.jobFunction.executeJob(closeChannel)
+
+		switch storedJob.mode {
+		case jobModeOneTime:
+			s.chMap.Delete(storedJob.id)
+			delete(s.jobs, storedJob.id)
+
+		case jobModeInterval:
+			storedJob.nextRun = now.Add(storedJob.interval)
+			storedJob.jobStatus.nextRunTime = storedJob.nextRun
+			heap.Push(&s.queue, storedJob)
+
+		case jobModeEveryXDaysAt:
+			storedJob.nextRun = nextRunAfterXDays(now, storedJob.daysInterval, storedJob.timeOfDay)
+			storedJob.jobStatus.nextRunTime = storedJob.nextRun
+			heap.Push(&s.queue, storedJob)
+		}
+	}
+}
+
+func (s *Scheduler) removeById(id uint64) error {
+	j, exists := s.jobs[id]
+	if !exists {
+		return fmt.Errorf("job with id %d not found", id)
+	}
+
+	if j.heapIndex >= 0 && j.heapIndex < len(s.queue) {
+		heap.Remove(&s.queue, j.heapIndex)
+	}
+
+	delete(s.jobs, id)
+	s.chMap.Delete(id)
+	if j.jobFunction != nil {
+		j.jobFunction.closeReturnChannel()
+	}
+	return nil
+}
+
+func (j *jobFunction) executeJob(closeAfter bool) {
+	results := j.function.Execute()
+
+	if j.returnChannel != nil {
+		if len(results) > 0 {
+			select {
+			case j.returnChannel <- results:
+			default:
+			}
+		}
+
+		if closeAfter {
+			j.closeReturnChannel()
+		}
+	}
+}
+
+func (j *jobFunction) closeReturnChannel() {
+	if j.returnChannel == nil {
 		return
 	}
 
-	// Collect jobs to execute without holding any locks
-	var jobsToExecute []jobFunction
-	var jobsToDelete []uint64
-	var intervalJobsToUpdate []struct {
-		id      uint64
-		nextRun time.Time
-	}
-
-	now := time.Now()
-	s.jobs.Range(func(key, value interface{}) bool {
-		k := key.(uint64)
-		v := value.(*job)
-
-		if v.jobStatus.state == 0 { // paused
-			return true // continue range
-		}
-
-		if v.mode == 0 && now.After(v.when) { // one-time job ready
-			jobsToExecute = append(jobsToExecute, *v.jobFunction)
-			jobsToDelete = append(jobsToDelete, k)
-		} else if v.mode == 1 && now.After(v.nextRun) { // interval job ready
-			jobsToExecute = append(jobsToExecute, *v.jobFunction)
-			intervalJobsToUpdate = append(intervalJobsToUpdate, struct {
-				id      uint64
-				nextRun time.Time
-			}{k, now.Add(v.interval)})
-		}
-		return true // continue range
+	j.closeOnce.Do(func() {
+		close(j.returnChannel)
 	})
-
-	// Execute jobs without holding any locks
-	for _, jobFunc := range jobsToExecute {
-		go jobFunc.executeJob()
-	}
-
-	// Update interval jobs next run time
-	for _, update := range intervalJobsToUpdate {
-		if jobInterface, exists := s.jobs.Load(update.id); exists {
-			if job := jobInterface.(*job); job != nil {
-				job.nextRun = update.nextRun
-			}
-		}
-	}
-
-	// Delete completed one-time jobs
-	for _, k := range jobsToDelete {
-		s.jobs.Delete(k)
-	}
 }
-func (s *Scheduler) removeById(id uint64) error {
-	if _, exists := s.jobs.LoadAndDelete(id); exists {
+
+func (s *Scheduler) pauseById(id uint64) error {
+	j, exists := s.jobs[id]
+	if !exists {
+		return fmt.Errorf("job with id %d not found", id)
+	}
+
+	if j.jobStatus.state == 0 {
 		return nil
 	}
-	return fmt.Errorf("job with id %d not found", id)
-}
-func (j jobFunction) executeJob() {
-	var results = j.function.Execute()
-	if j.returnChannel != nil && len(results) > 0 {
-		j.returnChannel <- results
-		close(j.returnChannel)
+
+	j.jobStatus.state = 0
+	if j.heapIndex >= 0 && j.heapIndex < len(s.queue) {
+		heap.Remove(&s.queue, j.heapIndex)
 	}
+
+	return nil
 }
-func (s *Scheduler) pauseById(id uint64) error {
-	if jobInterface, exists := s.jobs.Load(id); exists {
-		if job := jobInterface.(*job); job != nil {
-			job.jobStatus.state = 0
-			return nil
-		}
-	}
-	return fmt.Errorf("job with id %d not found", id)
-}
+
 func (s *Scheduler) unPauseById(id uint64) error {
-	if jobInterface, exists := s.jobs.Load(id); exists {
-		if job := jobInterface.(*job); job != nil {
-			job.jobStatus.state = 1
-			return nil
+	j, exists := s.jobs[id]
+	if !exists {
+		return fmt.Errorf("job with id %d not found", id)
+	}
+
+	if j.jobStatus.state != 0 {
+		return nil
+	}
+
+	j.jobStatus.state = 1
+	if j.nextRun.Before(time.Now()) {
+		j.nextRun = time.Now()
+	}
+	j.jobStatus.nextRunTime = j.nextRun
+	heap.Push(&s.queue, j)
+
+	return nil
+}
+
+func nextRunEveryXDaysAt(from time.Time, days int, timeOfDay time.Duration) time.Time {
+	dayStart := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
+	candidate := dayStart.Add(timeOfDay)
+	if !candidate.After(from) {
+		candidate = candidate.AddDate(0, 0, days)
+	}
+	return candidate
+}
+
+func nextRunAfterXDays(from time.Time, days int, timeOfDay time.Duration) time.Time {
+	next := nextRunEveryXDaysAt(from, days, timeOfDay)
+	for !next.After(from) {
+		next = next.AddDate(0, 0, days)
+	}
+	return next
+}
+
+func stopAndDrainTimer(t *time.Timer) {
+	if t == nil {
+		return
+	}
+
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
 		}
 	}
-	return fmt.Errorf("job with id %d not found", id)
 }

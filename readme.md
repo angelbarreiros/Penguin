@@ -630,7 +630,7 @@ Logs a fatal message to console and exits.
 
 ## Scheduler Package
 
-The `scheduler` package provides job scheduling functionality.
+The `scheduler` package provides asynchronous job scheduling using a timer + priority queue strategy (no fixed 1-second polling loop).
 
 ### Functions
 
@@ -644,11 +644,42 @@ Creates a job function.
 
 #### Configuration and Usage Methods
 
-##### ScheduleJob(when time.Time, jobFunction *jobFunction) (uint64, error)
-Schedules a one-time job.
+##### ScheduleOneTimeJob(delay time.Duration, jobFunction *jobFunction) (uint64, error)
+Schedules a one-time job after a delay.
+The first run is never immediate: `delay` must be greater than zero.
+
+Example:
+```go
+id, err := sched.ScheduleOneTimeJob(5*time.Second, scheduler.JobFunction(myJob))
+```
 
 ##### ScheduleIntervalJob(interval time.Duration, jobFunction *jobFunction) (uint64, error)
-Schedules a recurring job.
+Schedules a recurring interval job.
+The first run is never immediate: first execution is after `interval`.
+
+Example:
+```go
+id, err := sched.ScheduleIntervalJob(20*time.Minute, scheduler.JobFunction(myJob))
+```
+
+##### ScheduleProgrammedOneTimeJob(when time.Time, jobFunction *jobFunction) (uint64, error)
+Schedules a one-time job at an exact future timestamp.
+`when` must be strictly in the future.
+
+Example:
+```go
+id, err := sched.ScheduleProgrammedOneTimeJob(time.Now().Add(2*time.Hour), scheduler.JobFunction(myJob))
+```
+
+##### ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, jobFunction *jobFunction) (uint64, error)
+Schedules a recurring job every `everyXDays` days at the clock-time extracted from `at`.
+If today's target time has already passed, first run is moved to the next valid day window.
+
+Example:
+```go
+at := time.Date(2000, 1, 1, 8, 30, 0, 0, time.Local)
+id, err := sched.ScheduleProgrammedIntervalJob(1, at, scheduler.JobFunction(myJob))
+```
 
 ##### RemoveJob(id uint64) error
 Removes a job.

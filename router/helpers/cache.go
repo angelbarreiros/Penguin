@@ -66,7 +66,7 @@ func (c *cleanerCache) Close() {
 func (c *cleanerCache) Set(key string, i CacheItem) {
 	c.cache.Store(key, i)
 	var job = scheduler.JobFunction(&cleaner{cache: c.cache, key: key})
-	c.cleaner.ScheduleJob(time.Now().Add(i.expiration), job)
+	c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(i.expiration), job)
 }
 func (c *cleanerCache) Get(w http.ResponseWriter, key string) (CacheItem, bool) {
 	if item, ok := c.cache.Load(key); ok {
@@ -177,7 +177,7 @@ func (c *uuidCache[T]) Close() {
 func (c *uuidCache[T]) set(key uuid.UUID, item uuidCacheItem[T]) {
 	c.cache.Store(key, item)
 	var job = scheduler.JobFunction(&uuidCleaner{cache: c.cache, key: key})
-	c.cleaner.ScheduleJob(time.Now().Add(item.expiration), job)
+	c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(item.expiration), job)
 }
 
 // Store - Método público para almacenar un valor con clave específica
@@ -420,7 +420,7 @@ func (c *stringCache[T]) Close() {
 func (c *stringCache[T]) set(key string, item stringCacheItem[T]) {
 	c.cache.Store(key, item)
 	var job = scheduler.JobFunction(&stringCleaner{cache: c.cache, key: key})
-	c.cleaner.ScheduleJob(time.Now().Add(item.expiration), job)
+	c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(item.expiration), job)
 }
 
 // Store - Método público para almacenar un valor con clave específica
@@ -632,7 +632,7 @@ func (c *listCache[T]) SetTTL(duration time.Duration) {
 	if duration > 0 {
 		// Programar limpieza automática
 		job := scheduler.JobFunction(&listCacheCleaner[T]{cache: c})
-		c.cleaner.ScheduleJob(time.Now().Add(duration), job)
+		c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(duration), job)
 	}
 }
 

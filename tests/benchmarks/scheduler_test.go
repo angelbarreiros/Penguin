@@ -23,7 +23,7 @@ func BenchmarkCronEngineJobs(b *testing.B) {
 	var functionSum = functionSum{a: 1, b: 2}
 	for b.Loop() {
 		var job, ch = scheduler.JobFunction(functionSum).WithReturnChannel()
-		var _, err = sch.ScheduleJob(time.Now().Add(1*time.Second), job)
+		var _, err = sch.ScheduleProgrammedOneTimeJob(time.Now().Add(1*time.Second), job)
 		if err != nil {
 			b.Error(err)
 
