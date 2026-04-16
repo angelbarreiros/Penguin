@@ -49,17 +49,30 @@ type jobFunction struct {
 	closeOnce     sync.Once
 }
 
+// JobOptions configures optional behaviour for any scheduled job.
+// RunImmediately: execute the job right away when it is first scheduled
+// (applies to all job types; for programmed one-time jobs the future-time
+// validation is bypassed when this flag is set).
+// WaitForCompletion: for recurring jobs (interval / every-X-days), wait
+// until the current execution finishes before starting the next countdown.
+type JobOptions struct {
+	RunImmediately    bool
+	WaitForCompletion bool
+}
+
 type job struct {
-	id           uint64
-	mode         jobMode
-	when         time.Time
-	interval     time.Duration
-	daysInterval int
-	timeOfDay    time.Duration
-	nextRun      time.Time
-	heapIndex    int
-	jobFunction  *jobFunction
-	jobStatus    jobStatus
+	id                uint64
+	mode              jobMode
+	when              time.Time
+	interval          time.Duration
+	daysInterval      int
+	timeOfDay         time.Duration
+	nextRun           time.Time
+	heapIndex         int
+	jobFunction       *jobFunction
+	jobStatus         jobStatus
+	runImmediately    bool
+	waitForCompletion bool
 }
 
 type schedulerCommandType uint8
@@ -72,6 +85,7 @@ const (
 	cmdPauseScheduler
 	cmdUnpauseScheduler
 	cmdStopScheduler
+	cmdRescheduleJob
 )
 
 type schedulerCommand struct {
@@ -138,23 +152,33 @@ func (j *jobFunction) WithReturnChannel() (*jobFunction, chan []any) {
 	return j, j.returnChannel
 }
 
-func (s *Scheduler) ScheduleProgrammedOneTimeJob(when time.Time, jobFunction *jobFunction) (uint64, error) {
-	if !when.After(time.Now()) {
+func (s *Scheduler) ScheduleProgrammedOneTimeJob(when time.Time, jobFunction *jobFunction, opts ...JobOptions) (uint64, error) {
+	var opt JobOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	if !opt.RunImmediately && !when.After(time.Now()) {
 		return 0, fmt.Errorf("job time must be in the future")
 	}
 	if jobFunction == nil || jobFunction.function == nil {
 		return 0, fmt.Errorf("job function cannot be nil")
 	}
 
+	if opt.RunImmediately {
+		when = time.Now()
+	}
+
 	id := atomic.AddUint64(&jobCounter, 1)
 	newJob := &job{
-		id:          id,
-		mode:        jobModeOneTime,
-		when:        when,
-		nextRun:     when,
-		heapIndex:   -1,
-		jobFunction: jobFunction,
-		jobStatus:   jobStatus{state: 1, nextRunTime: when},
+		id:             id,
+		mode:           jobModeOneTime,
+		when:           when,
+		nextRun:        when,
+		heapIndex:      -1,
+		jobFunction:    jobFunction,
+		jobStatus:      jobStatus{state: 1, nextRunTime: when},
+		runImmediately: opt.RunImmediately,
 	}
 
 	resp := make(chan error, 1)
@@ -168,14 +192,14 @@ func (s *Scheduler) ScheduleProgrammedOneTimeJob(when time.Time, jobFunction *jo
 	return id, nil
 }
 
-func (s *Scheduler) ScheduleOneTimeJob(delay time.Duration, jobFunction *jobFunction) (uint64, error) {
+func (s *Scheduler) ScheduleOneTimeJob(delay time.Duration, jobFunction *jobFunction, opts ...JobOptions) (uint64, error) {
 	if delay <= 0 {
 		return 0, fmt.Errorf("delay must be greater than zero")
 	}
-	return s.ScheduleProgrammedOneTimeJob(time.Now().Add(delay), jobFunction)
+	return s.ScheduleProgrammedOneTimeJob(time.Now().Add(delay), jobFunction, opts...)
 }
 
-func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, jobFunction *jobFunction) (uint64, error) {
+func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, jobFunction *jobFunction, opts ...JobOptions) (uint64, error) {
 	if interval <= 0 {
 		return 0, fmt.Errorf("interval must be greater than zero")
 	}
@@ -183,16 +207,28 @@ func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, jobFunction *job
 		return 0, fmt.Errorf("job function cannot be nil")
 	}
 
+	var opt JobOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	id := atomic.AddUint64(&jobCounter, 1)
-	nextRun := time.Now().Add(interval)
+	var nextRun time.Time
+	if opt.RunImmediately {
+		nextRun = time.Now()
+	} else {
+		nextRun = time.Now().Add(interval)
+	}
 	intervalJob := &job{
-		id:          id,
-		mode:        jobModeInterval,
-		interval:    interval,
-		nextRun:     nextRun,
-		heapIndex:   -1,
-		jobFunction: jobFunction,
-		jobStatus:   jobStatus{state: 1, nextRunTime: nextRun},
+		id:                id,
+		mode:              jobModeInterval,
+		interval:          interval,
+		nextRun:           nextRun,
+		heapIndex:         -1,
+		jobFunction:       jobFunction,
+		jobStatus:         jobStatus{state: 1, nextRunTime: nextRun},
+		runImmediately:    opt.RunImmediately,
+		waitForCompletion: opt.WaitForCompletion,
 	}
 
 	resp := make(chan error, 1)
@@ -206,7 +242,7 @@ func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, jobFunction *job
 	return id, nil
 }
 
-func (s *Scheduler) ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, jobFunction *jobFunction) (uint64, error) {
+func (s *Scheduler) ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, jobFunction *jobFunction, opts ...JobOptions) (uint64, error) {
 	if everyXDays <= 0 {
 		return 0, fmt.Errorf("days must be greater than zero")
 	}
@@ -214,20 +250,32 @@ func (s *Scheduler) ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, 
 		return 0, fmt.Errorf("job function cannot be nil")
 	}
 
+	var opt JobOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	id := atomic.AddUint64(&jobCounter, 1)
 	hour, minute, second := at.Clock()
 	timeOfDay := time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute + time.Duration(second)*time.Second + time.Duration(at.Nanosecond())
-	nextRun := nextRunEveryXDaysAt(time.Now(), everyXDays, timeOfDay)
+	var nextRun time.Time
+	if opt.RunImmediately {
+		nextRun = time.Now()
+	} else {
+		nextRun = nextRunEveryXDaysAt(time.Now(), everyXDays, timeOfDay)
+	}
 
 	periodicAtJob := &job{
-		id:           id,
-		mode:         jobModeEveryXDaysAt,
-		daysInterval: everyXDays,
-		timeOfDay:    timeOfDay,
-		nextRun:      nextRun,
-		heapIndex:    -1,
-		jobFunction:  jobFunction,
-		jobStatus:    jobStatus{state: 1, nextRunTime: nextRun},
+		id:                id,
+		mode:              jobModeEveryXDaysAt,
+		daysInterval:      everyXDays,
+		timeOfDay:         timeOfDay,
+		nextRun:           nextRun,
+		heapIndex:         -1,
+		jobFunction:       jobFunction,
+		jobStatus:         jobStatus{state: 1, nextRunTime: nextRun},
+		runImmediately:    opt.RunImmediately,
+		waitForCompletion: opt.WaitForCompletion,
 	}
 
 	resp := make(chan error, 1)
@@ -484,6 +532,21 @@ func (s *Scheduler) handleCommand(cmd schedulerCommand) bool {
 			cmd.respErr <- nil
 		}
 
+	case cmdRescheduleJob:
+		j, exists := s.jobs[cmd.id]
+		if !exists || j.jobStatus.state == 0 {
+			break
+		}
+		now := time.Now()
+		switch j.mode {
+		case jobModeInterval:
+			j.nextRun = now.Add(j.interval)
+		case jobModeEveryXDaysAt:
+			j.nextRun = nextRunAfterXDays(now, j.daysInterval, j.timeOfDay)
+		}
+		j.jobStatus.nextRunTime = j.nextRun
+		heap.Push(&s.queue, j)
+
 	case cmdStopScheduler:
 		s.stateMux.Lock()
 		s.stopped = true
@@ -542,22 +605,33 @@ func (s *Scheduler) executeDueJobs() {
 		}
 
 		closeChannel := storedJob.mode == jobModeOneTime
-		go storedJob.jobFunction.executeJob(closeChannel)
 
-		switch storedJob.mode {
-		case jobModeOneTime:
-			s.chMap.Delete(storedJob.id)
-			delete(s.jobs, storedJob.id)
+		if storedJob.waitForCompletion && storedJob.mode != jobModeOneTime {
+			// Run in goroutine; reschedule only after execution finishes.
+			jobRef := storedJob
+			go func() {
+				jobRef.jobFunction.executeJob(false)
+				// Ignore error: if scheduler stopped, command will be dropped.
+				_ = s.submitCommand(schedulerCommand{typ: cmdRescheduleJob, id: jobRef.id})
+			}()
+		} else {
+			go storedJob.jobFunction.executeJob(closeChannel)
 
-		case jobModeInterval:
-			storedJob.nextRun = now.Add(storedJob.interval)
-			storedJob.jobStatus.nextRunTime = storedJob.nextRun
-			heap.Push(&s.queue, storedJob)
+			switch storedJob.mode {
+			case jobModeOneTime:
+				s.chMap.Delete(storedJob.id)
+				delete(s.jobs, storedJob.id)
 
-		case jobModeEveryXDaysAt:
-			storedJob.nextRun = nextRunAfterXDays(now, storedJob.daysInterval, storedJob.timeOfDay)
-			storedJob.jobStatus.nextRunTime = storedJob.nextRun
-			heap.Push(&s.queue, storedJob)
+			case jobModeInterval:
+				storedJob.nextRun = now.Add(storedJob.interval)
+				storedJob.jobStatus.nextRunTime = storedJob.nextRun
+				heap.Push(&s.queue, storedJob)
+
+			case jobModeEveryXDaysAt:
+				storedJob.nextRun = nextRunAfterXDays(now, storedJob.daysInterval, storedJob.timeOfDay)
+				storedJob.jobStatus.nextRunTime = storedJob.nextRun
+				heap.Push(&s.queue, storedJob)
+			}
 		}
 	}
 }
