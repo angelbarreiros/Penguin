@@ -3,16 +3,22 @@ package router
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 )
 
 type Router struct {
 	mux    *http.ServeMux
-	routes map[string]map[HTTPMethod]http.HandlerFunc
+	routes map[string]routeEntry
 }
 
-func (r *Router) StartServer(s string) {
-	panic(http.ListenAndServe(s, r.mux))
+type routeEntry struct {
+	handlers       map[HTTPMethod]http.HandlerFunc
+	allowedMethods string
+}
+
+func (r *Router) StartServer(port string) error {
+	return http.ListenAndServe(port, r.mux)
 }
 
 func InitRouter() *Router {
@@ -21,45 +27,63 @@ func InitRouter() *Router {
 }
 
 type Route struct {
-	Path             string
-	Method           HTTPMethod
-	Handler          http.HandlerFunc
+	Path              string
+	Method            HTTPMethod
+	Handler           http.HandlerFunc
+	AdditionalMethods []HTTPMethod
+	// Deprecated: use AdditionalMethods.
 	AditionalMethods []HTTPMethod
 }
 
 func (r *Router) NewRoute(route Route) {
-	if r.routes[route.Path] == nil {
-		r.routes[route.Path] = make(map[HTTPMethod]http.HandlerFunc)
+	entry, exists := r.routes[route.Path]
+	if !exists {
+		entry = routeEntry{handlers: make(map[HTTPMethod]http.HandlerFunc)}
 		r.mux.HandleFunc(route.Path, r.methodHandler(route.Path))
 	}
 
-	if _, exists := r.routes[route.Path][route.Method]; exists {
+	if _, exists := entry.handlers[route.Method]; exists {
 		panic(fmt.Sprintf("Route already exists: %s %s", route.Method, route.Path))
 	}
 
-	r.routes[route.Path][route.Method] = route.Handler
+	entry.handlers[route.Method] = route.Handler
 
-	for _, method := range route.AditionalMethods {
-		if _, exists := r.routes[route.Path][method]; exists {
+	additionalMethods := route.AdditionalMethods
+	if len(additionalMethods) == 0 {
+		additionalMethods = route.AditionalMethods
+	}
+
+	for _, method := range additionalMethods {
+		if _, exists := entry.handlers[method]; exists {
 			continue
 		}
-		r.routes[route.Path][method] = route.Handler
+		entry.handlers[method] = route.Handler
 	}
+
+	entry.allowedMethods = buildAllowedMethodsHeader(entry.handlers)
+	r.routes[route.Path] = entry
 }
+
+func buildAllowedMethodsHeader(handlers map[HTTPMethod]http.HandlerFunc) string {
+	allowedMethods := make([]string, 0, len(handlers))
+	for m := range handlers {
+		allowedMethods = append(allowedMethods, string(m))
+	}
+	sort.Strings(allowedMethods)
+	return strings.Join(allowedMethods, ", ")
+}
+
 func (r *Router) methodHandler(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 
 		var method HTTPMethod = HTTPMethod(req.Method)
-		handlers := r.routes[path]
-
-		var allowedMethods []string
-		for m := range handlers {
-			allowedMethods = append(allowedMethods, string(m))
-		}
-		w.Header().Set("Access-Control-Allow-Methods", strings.Join(allowedMethods, ", "))
+		route := r.routes[path]
+		handlers := route.handlers
+		w.Header().Set("Access-Control-Allow-Methods", route.allowedMethods)
 
 		handler, exists := handlers[method]
 		if !exists {
+			w.Header().Set("Allow", route.allowedMethods)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			w.Write([]byte(`{"error": "Method not allowed"}`))
@@ -92,7 +116,7 @@ func initRouter() {
 	if nil == routerInstance {
 		routerInstance = &Router{
 			mux:    http.NewServeMux(),
-			routes: make(map[string]map[HTTPMethod]http.HandlerFunc),
+			routes: make(map[string]routeEntry),
 		}
 	}
 
