@@ -5,6 +5,7 @@ import "regexp"
 var numericRegex = regexp.MustCompile(`^0|[1-9]\d*$`)
 var sanitizeRegex = regexp.MustCompile(`[';<>]|--|/\*|\*/`)
 var boolRegex = regexp.MustCompile(`^(true|false)$`)
+var floatRegex = regexp.MustCompile(`^[0-9]*\.?[0-9]+$`)
 
 const (
 	iSO8601UTC       = "2006-01-02T15:04:05Z"

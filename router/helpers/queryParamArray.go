@@ -3,7 +3,6 @@ package helpers
 import (
 	"database/sql"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -152,7 +151,6 @@ func GetNullByteArrayQueryParam(queryParameter string, r *http.Request) ([]sql.N
 }
 
 func GetNullFloat64ArrayQueryParam(queryParameter string, r *http.Request) ([]sql.NullFloat64, error) {
-	floatRegex := regexp.MustCompile(`^[0-9]*\.?[0-9]+$`)
 	values := r.URL.Query()[queryParameter]
 	result := make([]sql.NullFloat64, 0, len(values))
 	for _, v := range values {
@@ -169,6 +167,199 @@ func GetNullFloat64ArrayQueryParam(queryParameter string, r *http.Request) ([]sq
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
 		}
 		result = append(result, sql.NullFloat64{Float64: parsed, Valid: true})
+	}
+	return result, nil
+}
+
+// Non-nullable array query param functions
+
+func GetUint64ArrayQueryParam(queryParameter string, r *http.Request) ([]uint64, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]uint64, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !numericRegex.MatchString(v) {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
+		}
+		parsed, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
+func GetStringArrayQueryParam(queryParameter string, r *http.Request) ([]string, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			result = append(result, v)
+		}
+	}
+	return result, nil
+}
+
+func GetInt32ArrayQueryParam(queryParameter string, r *http.Request) ([]int32, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]int32, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !numericRegex.MatchString(v) {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int32")
+		}
+		parsed, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int32")
+		}
+		result = append(result, int32(parsed))
+	}
+	return result, nil
+}
+
+func GetBoolArrayQueryParam(queryParameter string, r *http.Request) ([]bool, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]bool, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !boolRegex.MatchString(v) {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "bool")
+		}
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "bool")
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
+func GetUUIDArrayQueryParam(queryParameter string, r *http.Request) ([]uuid.UUID, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]uuid.UUID, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		parsed, err := uuid.Parse(v)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "UUID")
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
+func GetTimeArrayQueryParam(queryParameter string, r *http.Request) ([]time.Time, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]time.Time, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		parsed, err := time.Parse(iSO8601UTC, v)
+		if err == nil {
+			result = append(result, parsed)
+			continue
+		}
+		parsed, err = time.Parse(iSO8601WithMS, v)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "time")
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
+func GetByteArrayQueryParam(queryParameter string, r *http.Request) ([]byte, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]byte, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !numericRegex.MatchString(v) {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "byte")
+		}
+		parsed, err := strconv.ParseUint(v, 10, 8)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "byte")
+		}
+		result = append(result, byte(parsed))
+	}
+	return result, nil
+}
+
+func GetFloat64ArrayQueryParam(queryParameter string, r *http.Request) ([]float64, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]float64, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !numericRegex.MatchString(v) && !floatRegex.MatchString(v) {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
+		}
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
+func GetInt64ArrayQueryParam(queryParameter string, r *http.Request) ([]int64, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]int64, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !numericRegex.MatchString(v) {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int64")
+		}
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int64")
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
+func GetInt16ArrayQueryParam(queryParameter string, r *http.Request) ([]int16, error) {
+	values := r.URL.Query()[queryParameter]
+	result := make([]int16, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if !numericRegex.MatchString(v) {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int16")
+		}
+		parsed, err := strconv.ParseInt(v, 10, 16)
+		if err != nil {
+			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int16")
+		}
+		result = append(result, int16(parsed))
 	}
 	return result, nil
 }
