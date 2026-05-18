@@ -88,6 +88,25 @@ func GetNullTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime
 	return sql.NullTime{Time: parsedTime, Valid: true}, nil
 }
 
+func GetNullNaiveTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime, error) {
+	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
+	if id == "" {
+		return sql.NullTime{Valid: false}, nil
+	}
+
+	parsedTime, err := time.Parse(naiveISO8601, id)
+	if err == nil {
+		return sql.NullTime{Time: parsedTime, Valid: true}, nil
+	}
+
+	parsedTime, err = time.Parse(naiveISO8601WithMS, id)
+	if err != nil {
+		return sql.NullTime{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "naive time")
+	}
+
+	return sql.NullTime{Time: parsedTime, Valid: true}, nil
+}
+
 func GetNullStringQueryParam(queryParameter string, r *http.Request) (sql.NullString, error) {
 	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {

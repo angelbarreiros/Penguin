@@ -404,6 +404,14 @@ Example:
 name, err := helpers.GetStringPathValue("name", r, helpers.WithCustomLengthOption(100))
 ```
 
+##### GetNullNaiveTimePathValue(identifier string, r *http.Request) (sql.NullTime, error)
+Gets nullable naive time from path value without a timezone, using "2006-01-02T15:04:05" or "2006-01-02T15:04:05.000".
+
+Example:
+```go
+createdAt, err := helpers.GetNullNaiveTimePathValue("createdAt", r)
+```
+
 #### Query Params
 
 ##### GetNullUint64QueryParam(queryParameter string, r *http.Request) (sql.NullInt64, error)
@@ -444,6 +452,14 @@ Gets nullable time from query.
 Example:
 ```go
 val, err := helpers.GetNullTimeQueryParam("createdAt", r)
+```
+
+##### GetNullNaiveTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime, error)
+Gets nullable naive time from query without a timezone, using "2006-01-02T15:04:05" or "2006-01-02T15:04:05.000".
+
+Example:
+```go
+val, err := helpers.GetNullNaiveTimeQueryParam("createdAt", r)
 ```
 
 ##### GetNullStringQueryParam(queryParameter string, r *http.Request) (sql.NullString, error)
@@ -713,8 +729,6 @@ Adds a return channel to the job function.
 ### Types
 
 - `JobFuncInterface`: Interface for job functions.
-
-
 
 
 

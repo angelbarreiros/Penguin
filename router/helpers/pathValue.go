@@ -155,6 +155,25 @@ func GetNullTimePathValue(identifier string, r *http.Request) (sql.NullTime, err
 	return sql.NullTime{Time: idTime, Valid: true}, nil
 }
 
+func GetNullNaiveTimePathValue(identifier string, r *http.Request) (sql.NullTime, error) {
+	id := strings.TrimSpace(r.PathValue(identifier))
+	if id == "" {
+		return sql.NullTime{Valid: false}, nil
+	}
+
+	idTime, err := time.Parse(naiveISO8601, id)
+	if err == nil {
+		return sql.NullTime{Time: idTime, Valid: true}, nil
+	}
+
+	idTime, err = time.Parse(naiveISO8601WithMS, id)
+	if err != nil {
+		return sql.NullTime{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "naive time")
+	}
+
+	return sql.NullTime{Time: idTime, Valid: true}, nil
+}
+
 func GetNullStringPathValue(identifier string, r *http.Request) (sql.NullString, error) {
 	id := strings.TrimSpace(r.PathValue(identifier))
 	if id == "" {

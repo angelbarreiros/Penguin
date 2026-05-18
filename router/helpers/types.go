@@ -8,7 +8,9 @@ var boolRegex = regexp.MustCompile(`^(true|false)$`)
 var floatRegex = regexp.MustCompile(`^[0-9]*\.?[0-9]+$`)
 
 const (
-	iSO8601UTC       = "2006-01-02T15:04:05Z"
-	iSO8601WithMS    = "2006-01-02T15:04:05.000Z"
-	defaultMaxLength = 50
+	iSO8601UTC         = "2006-01-02T15:04:05Z"
+	iSO8601WithMS      = "2006-01-02T15:04:05.000Z"
+	naiveISO8601       = "2006-01-02T15:04:05"
+	naiveISO8601WithMS = "2006-01-02T15:04:05.000"
+	defaultMaxLength   = 50
 )
