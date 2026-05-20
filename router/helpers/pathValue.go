@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	routerErrors "github.com/angelbarreiros/Penguin/router/errors"
 	"github.com/google/uuid"
@@ -143,35 +142,25 @@ func GetNullTimePathValue(identifier string, r *http.Request) (sql.NullTime, err
 	if id == "" {
 		return sql.NullTime{Valid: false}, nil
 	}
-	// Try RFC3339 format first
-	idTime, err := time.Parse(time.RFC3339, id)
+	idTime, err := parseTime(id)
 	if err != nil {
-		// Try RFC3339Nano format
-		idTime, err = time.Parse(time.RFC3339Nano, id)
-		if err != nil {
-			return sql.NullTime{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "time")
-		}
+		return sql.NullTime{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "time")
 	}
 	return sql.NullTime{Time: idTime, Valid: true}, nil
 }
 
-func GetNullNaiveTimePathValue(identifier string, r *http.Request) (sql.NullTime, error) {
+func GetNullNaiveDateTimePathValue(identifier string, r *http.Request) (NullNaiveDateTime, error) {
 	id := strings.TrimSpace(r.PathValue(identifier))
 	if id == "" {
-		return sql.NullTime{Valid: false}, nil
+		return NullNaiveDateTime{Valid: false}, nil
 	}
 
-	idTime, err := time.Parse(naiveISO8601, id)
-	if err == nil {
-		return sql.NullTime{Time: idTime, Valid: true}, nil
-	}
-
-	idTime, err = time.Parse(naiveISO8601WithMS, id)
+	idTime, err := parseNaiveDateTime(id)
 	if err != nil {
-		return sql.NullTime{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "naive time")
+		return NullNaiveDateTime{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "naive datetime")
 	}
 
-	return sql.NullTime{Time: idTime, Valid: true}, nil
+	return NullNaiveDateTime{DateTime: idTime, Valid: true}, nil
 }
 
 func GetNullStringPathValue(identifier string, r *http.Request) (sql.NullString, error) {

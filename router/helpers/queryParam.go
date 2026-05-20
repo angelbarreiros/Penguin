@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	routerErrors "github.com/angelbarreiros/Penguin/router/errors"
 	"github.com/google/uuid"
@@ -74,13 +73,7 @@ func GetNullTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime
 	if id == "" {
 		return sql.NullTime{Valid: false}, nil
 	}
-
-	parsedTime, err := time.Parse(iSO8601UTC, id)
-	if err == nil {
-		return sql.NullTime{Time: parsedTime, Valid: true}, nil
-	}
-
-	parsedTime, err = time.Parse(iSO8601WithMS, id)
+	parsedTime, err := parseTime(id)
 	if err != nil {
 		return sql.NullTime{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "time")
 	}
@@ -88,23 +81,18 @@ func GetNullTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime
 	return sql.NullTime{Time: parsedTime, Valid: true}, nil
 }
 
-func GetNullNaiveTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime, error) {
+func GetNullNaiveDateTimeQueryParam(queryParameter string, r *http.Request) (NullNaiveDateTime, error) {
 	id := strings.TrimSpace(r.URL.Query().Get(queryParameter))
 	if id == "" {
-		return sql.NullTime{Valid: false}, nil
+		return NullNaiveDateTime{Valid: false}, nil
 	}
 
-	parsedTime, err := time.Parse(naiveISO8601, id)
-	if err == nil {
-		return sql.NullTime{Time: parsedTime, Valid: true}, nil
-	}
-
-	parsedTime, err = time.Parse(naiveISO8601WithMS, id)
+	parsedTime, err := parseNaiveDateTime(id)
 	if err != nil {
-		return sql.NullTime{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "naive time")
+		return NullNaiveDateTime{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "naive datetime")
 	}
 
-	return sql.NullTime{Time: parsedTime, Valid: true}, nil
+	return NullNaiveDateTime{DateTime: parsedTime, Valid: true}, nil
 }
 
 func GetNullStringQueryParam(queryParameter string, r *http.Request) (sql.NullString, error) {

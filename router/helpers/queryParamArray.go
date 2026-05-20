@@ -115,12 +115,7 @@ func GetNullTimeArrayQueryParam(queryParameter string, r *http.Request) ([]sql.N
 			result = append(result, sql.NullTime{Valid: false})
 			continue
 		}
-		parsed, err := time.Parse(iSO8601UTC, v)
-		if err == nil {
-			result = append(result, sql.NullTime{Time: parsed, Valid: true})
-			continue
-		}
-		parsed, err = time.Parse(iSO8601WithMS, v)
+		parsed, err := parseTime(v)
 		if err != nil {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "time")
 		}
@@ -270,12 +265,7 @@ func GetTimeArrayQueryParam(queryParameter string, r *http.Request) ([]time.Time
 		if v == "" {
 			continue
 		}
-		parsed, err := time.Parse(iSO8601UTC, v)
-		if err == nil {
-			result = append(result, parsed)
-			continue
-		}
-		parsed, err = time.Parse(iSO8601WithMS, v)
+		parsed, err := parseTime(v)
 		if err != nil {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "time")
 		}

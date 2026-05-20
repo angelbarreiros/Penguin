@@ -404,12 +404,12 @@ Example:
 name, err := helpers.GetStringPathValue("name", r, helpers.WithCustomLengthOption(100))
 ```
 
-##### GetNullNaiveTimePathValue(identifier string, r *http.Request) (sql.NullTime, error)
-Gets nullable naive time from path value without a timezone, using "2006-01-02T15:04:05" or "2006-01-02T15:04:05.000".
+##### GetNullNaiveDateTimePathValue(identifier string, r *http.Request) (NullNaiveDateTime, error)
+Gets nullable naive datetime from path value without a timezone, using values like "2006-01-02T15:04:05" or "2006-01-02T15:04:05.000".
 
 Example:
 ```go
-createdAt, err := helpers.GetNullNaiveTimePathValue("createdAt", r)
+createdAt, err := helpers.GetNullNaiveDateTimePathValue("createdAt", r)
 ```
 
 #### Query Params
@@ -454,12 +454,12 @@ Example:
 val, err := helpers.GetNullTimeQueryParam("createdAt", r)
 ```
 
-##### GetNullNaiveTimeQueryParam(queryParameter string, r *http.Request) (sql.NullTime, error)
-Gets nullable naive time from query without a timezone, using "2006-01-02T15:04:05" or "2006-01-02T15:04:05.000".
+##### GetNullNaiveDateTimeQueryParam(queryParameter string, r *http.Request) (NullNaiveDateTime, error)
+Gets nullable naive datetime from query without a timezone, using values like "2006-01-02T15:04:05" or "2006-01-02T15:04:05.000".
 
 Example:
 ```go
-val, err := helpers.GetNullNaiveTimeQueryParam("createdAt", r)
+val, err := helpers.GetNullNaiveDateTimeQueryParam("createdAt", r)
 ```
 
 ##### GetNullStringQueryParam(queryParameter string, r *http.Request) (sql.NullString, error)
@@ -729,8 +729,6 @@ Adds a return channel to the job function.
 ### Types
 
 - `JobFuncInterface`: Interface for job functions.
-
-
 
 
 
