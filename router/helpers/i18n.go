@@ -70,6 +70,13 @@ func (i i18n) TranslateWithLanguage(key string, language string) string {
 	return i.translateWithLanguage(key, language)
 }
 
+// TranslateWithLanguageWithVars traduce una clave usando key + language, sin request,
+// reemplazando variables {{0}}, {{1}}, etc.
+func (i i18n) TranslateWithLanguageWithVars(key string, language string, args ...any) string {
+	translation := i.TranslateWithLanguage(key, language)
+	return i.replaceVariables(translation, args...)
+}
+
 // translateWithLanguage realiza la lógica común de traducción para un lenguaje específico
 func (i i18n) translateWithLanguage(key string, language string) string {
 	var sb strings.Builder
