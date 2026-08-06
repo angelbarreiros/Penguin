@@ -6,20 +6,17 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
-	DefaultContextTimeout int    = 5
-	DefaultContextKey     string = "user"
+	DefaultContextKey string = "user"
 )
 
 type PlainAuthInterface interface {
 	Authorize(r *http.Request) (bool, error)
 	GetUser(r *http.Request) (any, error)
-	GetTimeout() time.Duration
 	GetContextKey() any
 }
 type rBACClaimsInterface interface {
@@ -45,7 +42,6 @@ type RBACAuthInterface interface {
 	Authorize(r *http.Request) (bool, error)
 	GetUser(r *http.Request) (any, error)
 	RBAC(allowedRoles []string) bool
-	GetTimeout() time.Duration
 	GetContextKey() any
 }
 

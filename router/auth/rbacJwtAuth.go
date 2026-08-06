@@ -21,7 +21,6 @@ type RBACJwtAuth struct {
 	options     *jwtRbacAuthOptions
 }
 type jwtRbacAuthOptions struct {
-	Timeout    time.Duration
 	ContextKey any
 }
 
@@ -103,16 +102,8 @@ func (j *RBACJwtAuth) RBAC(allowedRoles []string) bool {
 	return false
 }
 
-func (j *RBACJwtAuth) GetTimeout() time.Duration {
-	return j.options.Timeout
-}
 func (j *RBACJwtAuth) GetContextKey() any {
 	return j.options.ContextKey
-}
-func JwtAuthRbacWithCustomTimeout(timeout time.Duration) jwtRbacOptionsFunc {
-	return func(ja *RBACJwtAuth) {
-		ja.options.Timeout = timeout
-	}
 }
 func JwtAuthRbacWithCustomContextKey(key any) jwtRbacOptionsFunc {
 	return func(ja *RBACJwtAuth) {
@@ -128,7 +119,6 @@ func initJwtAuthRbac(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, o
 		authKey:    secret,
 		claimsType: claimsType,
 		options: &jwtRbacAuthOptions{
-			Timeout:    time.Duration(DefaultContextTimeout),
 			ContextKey: DefaultContextKey,
 		},
 	}

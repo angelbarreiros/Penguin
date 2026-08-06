@@ -19,7 +19,6 @@ type JwtAuth struct {
 	options     *jwtAuthOptions
 }
 type jwtAuthOptions struct {
-	Timeout    time.Duration
 	ContextKey any
 }
 
@@ -88,19 +87,11 @@ func (j *JwtAuth) GetUser(r *http.Request) (any, error) {
 	return jwtToken.Claims, nil
 }
 
-func (j *JwtAuth) GetTimeout() time.Duration {
-	return j.options.Timeout
-}
 func (j *JwtAuth) GetContextKey() any {
 	return j.options.ContextKey
 }
-func WithCustomTimeout(timeout time.Duration) jwtRbacOptionsFunc {
-	return func(ja *RBACJwtAuth) {
-		ja.options.Timeout = timeout
-	}
-}
-func WithCustomContextKey(key any) jwtRbacOptionsFunc {
-	return func(ja *RBACJwtAuth) {
+func WithCustomContextKey(key any) jwtOptionsFunc {
+	return func(ja *JwtAuth) {
 		ja.options.ContextKey = key
 	}
 }
@@ -113,7 +104,6 @@ func initJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, opti
 		authKey:    secret,
 		claimsType: claimsType,
 		options: &jwtAuthOptions{
-			Timeout:    time.Duration(DefaultContextTimeout),
 			ContextKey: DefaultContextKey,
 		},
 	}

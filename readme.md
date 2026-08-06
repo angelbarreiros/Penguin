@@ -192,29 +192,34 @@ Sets options passthrough.
 
 ## Middlewares Package
 
-The `middlewares` package provides abstract middlewares for common HTTP functionalities. For `WithAuthMiddleWare` and `WithCors`, you need to use the configurations from the `auth` and `cors` packages respectively.
+The `middlewares` package provides abstract middlewares for common HTTP functionalities. For `WithAuthMiddleware` and `WithCors`, you need to use the configurations from the `auth` and `cors` packages respectively.
 
 ### Functions
 
-#### WithAuthMiddleWare(auth auth.PlainAuthInterface, hf handleFunc) handleFunc
+#### WithAuthMiddleware(auth auth.PlainAuthInterface, hf handleFunc, opts ...authMiddlewareOption) handleFunc
 Applies plain JWT authentication.
 
 Example:
 ```go
-handler := middlewares.WithAuthMiddleWare(jwtAuth, func(w http.ResponseWriter, r *http.Request) {
+handler := middlewares.WithAuthMiddleware(jwtAuth, func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte("Authenticated"))
-})
+}, middlewares.WithTimeout(5*time.Second))
 ```
 
-#### WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf handleFunc) handleFunc
+The timeout option is optional. Without it, the middleware inherits the incoming request context without adding a deadline.
+
+#### WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf handleFunc, opts ...authMiddlewareOption) handleFunc
 Applies JWT authentication with RBAC.
 
 Example:
 ```go
 handler := middlewares.WithAuthAndRBAC(rbacAuth, []string{"admin"}, func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte("Authorized"))
-})
+}, middlewares.WithTimeout(5*time.Second))
 ```
+
+#### WithTimeout(timeout time.Duration) authMiddlewareOption
+Adds a deadline to the authentication middleware context. The deadline covers authentication and the downstream handler. The timeout must be greater than zero. Context cancellation is cooperative and does not automatically return an HTTP timeout response.
 
 #### WithCors(corrsConfig *cors.CORSConfig, hf handleFunc) handleFunc
 Applies CORS configuration.
@@ -729,7 +734,6 @@ Adds a return channel to the job function.
 ### Types
 
 - `JobFuncInterface`: Interface for job functions.
-
 
 
 
