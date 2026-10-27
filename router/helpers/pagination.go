@@ -27,6 +27,12 @@ func GetPaginationParams(r *http.Request, defaultPageSize uint) PaginationParams
 
 // GetPaginationParamsWithMax is GetPaginationParams with an explicit page size cap.
 func GetPaginationParamsWithMax(r *http.Request, defaultPageSize uint, maxPageSize uint) PaginationParams {
+	return GetPaginationParamsWithLimits(r, defaultPageSize, maxPageSize, 0)
+}
+
+// GetPaginationParamsWithLimits also clamps page to maxPage (0 = no limit),
+// bounding the OFFSET a client can make the database skip.
+func GetPaginationParamsWithLimits(r *http.Request, defaultPageSize uint, maxPageSize uint, maxPage uint) PaginationParams {
 	if defaultPageSize == 0 {
 		defaultPageSize = 1
 	}
@@ -41,6 +47,9 @@ func GetPaginationParamsWithMax(r *http.Request, defaultPageSize uint, maxPageSi
 	page := getNullUintQueryParam("page", r)
 	if page.Valid && page.Int64 >= 1 {
 		params.Page = uint(page.Int64)
+	}
+	if maxPage > 0 && params.Page > maxPage {
+		params.Page = maxPage
 	}
 
 	pageSize := getNullUintQueryParam("pageSize", r)

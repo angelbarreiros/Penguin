@@ -70,7 +70,7 @@ func WithAudience(audience string) jwtOptionsFunc {
 
 func initJwtAuth(publicKey *ecdsa.PublicKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
 	var opts *jwtAuthOptions = &jwtAuthOptions{
-		ContextKey: DefaultContextKey,
+		ContextKey: UserContextKey,
 	}
 	for _, opt := range options {
 		opt(opts)

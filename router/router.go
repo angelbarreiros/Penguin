@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/angelbarreiros/Penguin/router/cors"
+	"github.com/angelbarreiros/Penguin/router/middlewares"
 )
 
 type Router struct {
@@ -25,6 +28,9 @@ type Router struct {
 type routeEntry struct {
 	handlers       map[HTTPMethod]http.HandlerFunc
 	allowedMethods string
+	// cors answers CORS preflights for the path when no OPTIONS handler is
+	// registered.
+	cors *cors.CORSConfig
 }
 
 // ServerConfig holds the http.Server limits used by StartServer.
@@ -107,6 +113,10 @@ type Route struct {
 	AdditionalMethods []HTTPMethod
 	// Deprecated: use AdditionalMethods.
 	AditionalMethods []HTTPMethod
+	// CORS, when set, wraps Handler with middlewares.WithCors and lets the
+	// router answer CORS preflights for Path. All routes sharing a Path must
+	// use the same config.
+	CORS *cors.CORSConfig
 }
 
 func (r *Router) NewRoute(route Route) {
@@ -133,7 +143,16 @@ func (r *Router) NewRoute(route Route) {
 		panic(fmt.Sprintf("Route already exists: %s %s", route.Method, route.Path))
 	}
 
-	entry.handlers[route.Method] = route.Handler
+	handler := route.Handler
+	if route.CORS != nil {
+		if entry.cors != nil && entry.cors != route.CORS {
+			panic(fmt.Sprintf("Route path already uses a different CORS config: %s", route.Path))
+		}
+		entry.cors = route.CORS
+		handler = middlewares.WithCors(route.CORS, handler)
+	}
+
+	entry.handlers[route.Method] = handler
 
 	additionalMethods := route.AdditionalMethods
 	if len(additionalMethods) == 0 {
@@ -144,7 +163,7 @@ func (r *Router) NewRoute(route Route) {
 		if _, exists := entry.handlers[method]; exists {
 			continue
 		}
-		entry.handlers[method] = route.Handler
+		entry.handlers[method] = handler
 	}
 
 	entry.allowedMethods = buildAllowedMethodsHeader(entry.handlers)
@@ -180,8 +199,16 @@ func (r *Router) methodHandler(path string) http.HandlerFunc {
 		if !exists && method == HEAD {
 			handler, exists = route.handlers[GET]
 		}
+		isPreflight := method == OPTIONS && req.Header.Get("Access-Control-Request-Method") != ""
+		if isPreflight {
+			w.Header().Set("Access-Control-Allow-Methods", route.allowedMethods)
+		}
 		if !exists && method == OPTIONS {
 			w.Header().Set("Allow", route.allowedMethods)
+			if isPreflight && route.cors != nil {
+				middlewares.WithCors(route.cors, noContent)(w, req)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -193,9 +220,12 @@ func (r *Router) methodHandler(path string) http.HandlerFunc {
 			w.Write(body)
 			return
 		}
-		w.Header().Set("Access-Control-Allow-Methods", route.allowedMethods)
 		handler(w, req)
 	}
+}
+
+func noContent(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func initRouter() {

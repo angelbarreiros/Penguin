@@ -82,6 +82,13 @@ defer r.Shutdown(context.Background())
 
 Routes can be registered at any time, including after the server has started. `HEAD` falls back to the `GET` handler, and an unregistered `OPTIONS` returns `204` with an `Allow` header. `Route.Path` must not contain a method prefix such as `"GET /x"`.
 
+Set `Route.CORS` to apply a CORS config: the handler is wrapped with `middlewares.WithCors`, and the router answers CORS preflights for the path (with `Access-Control-Allow-Methods`) without running any handler. All routes on one path must share the same config.
+
+```go
+config := cors.NewCORSConfig(cors.WithAllowedOrigins([]string{"https://app.example"}))
+r.NewRoute(router.Route{Path: "/api/items", Method: router.POST, Handler: createItem, CORS: config})
+```
+
 ### HTTP Methods
 Supported HTTP methods:
 - `GET`
@@ -110,6 +117,8 @@ privateKey, err := auth.LoadPrivateKeyFromPEM(keyPem)
 ```
 
 Both auth types are safe for concurrent use and keep no per-request state. Every request gets a fresh claims value. Tokens must carry `exp`, and only the ES* algorithm that matches the key's curve is accepted. Use `NewJwtAuthWithPublicKey` / `NewJwtAuthWithRbacAndPublicKey` for services that only verify tokens, and `WithIssuer` / `WithAudience` (or `JwtAuthRbacWithIssuer` / `JwtAuthRbacWithAudience`) to enforce `iss` and `aud`.
+
+The auth middlewares store the user under `auth.UserContextKey`, a typed key no other package can collide with. The plain string key `"user"` (`auth.DefaultContextKey`) is deprecated; pass `auth.WithCustomContextKey(auth.DefaultContextKey)` to keep using it.
 
 #### NewJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface) *JwtAuth
 Creates a JWT auth instance.
@@ -245,8 +254,12 @@ handler := middlewares.WithCors(config, func(w http.ResponseWriter, r *http.Requ
 })
 ```
 
+Requests whose `Origin` is the request's own host are passed through without CORS headers. Other origins that are not allowed get `403`. `WithCors` only sees preflights when the route registers `OPTIONS`; prefer `Route.CORS`, which handles them for you.
+
 #### WithLogging(hf handleFunc) handleFunc
-Logs HTTP requests.
+Logs HTTP requests. Use `WithLoggingTrustedProxies(proxies, hf)` to log the forwarded client IP from trusted proxies, or `WithLoggingTrustedProxyHeader(proxies, header, hf)` to read only `X-Forwarded-For` or only `X-Real-IP`. Naming the header is recommended: when both are read, a proxy that sets only `X-Real-IP` but forwards a client's `X-Forwarded-For` lets clients choose their IP.
+
+The logging and recovery wrappers implement `http.Flusher` and `http.Hijacker`, so SSE and WebSocket handlers work behind them.
 
 Example:
 ```go
@@ -274,6 +287,8 @@ handler := middlewares.WithRateLimiting(func(w http.ResponseWriter, r *http.Requ
     w.Write([]byte("Limited"))
 }, middlewares.RateLimitOptStartingLimit(10), middlewares.RateLimitOptLimitPerSecond(2.0))
 ```
+
+Clients are keyed by IP and route; IPv6 clients are grouped by /64 (`RateLimitOptIPv6PrefixLength`). At most `RateLimitOptMaxEntries` clients (default 100,000) are tracked; when full, the least recently seen client is forgotten instead of rejecting new ones. `RateLimitOptTrustedProxies` and `RateLimitOptTrustedProxyHeader` control which forwarding header is honoured.
 
 #### WithQueryParametersObligation(queryParameters []string, hf handleFunc) handleFunc
 Requires query parameters.
@@ -315,7 +330,7 @@ The `helpers` package provides utility functions for common HTTP operations.
 
 ### Cache
 
-All caches check expiry on every read. Re-storing a key resets its TTL, and an expiration `<= 0` means the entry never expires. Each keyed cache (`NewStringCache`, `NewUUIDCache`, `NewCleanerCacheInstance`) owns its own cleaner, so call `Close()` when you are done with it. `Get*CacheInstance` registries are keyed by both name and value type. Cache hits are sent with `Cache-Control: private`, and `GenerateCacheKey` hashes the `Authorization` header.
+All caches check expiry on every read. Re-storing a key resets its TTL, and an expiration `<= 0` means the entry never expires. Each keyed cache (`NewStringCache`, `NewUUIDCache`, `NewCleanerCacheInstance`) runs a sweeper that drops expired entries every minute, so call `Close()` when you are done with it. A closed cache ignores writes, and `Get*CacheInstance` / `NewCleanerCacheInstance` return a fresh cache after a close. `Get*CacheInstance` registries are keyed by both name and value type. `Get` sends `Cache-Control: private` and `Vary: Accept, Accept-Language, Authorization, Cookie` on hits and misses, and `GenerateCacheKey` includes the host and hashes the `Authorization` and `Cookie` headers.
 
 #### NewCacheItem(value any, expiration time.Duration) CacheItem
 Creates a cache item.
@@ -326,7 +341,7 @@ item := helpers.NewCacheItem(data, time.Hour)
 ```
 
 #### NewCleanerCacheInstance() *cleanerCache
-Gets singleton cache instance.
+Gets singleton cache instance. It holds at most `helpers.DefaultResponseCacheMaxEntries` (10,000) entries; while full, new keys are not stored. Change the cap with `cache.SetMaxEntries(n)` (`<= 0` removes it).
 
 Example:
 ```go
@@ -377,13 +392,13 @@ Gets typed value from request context. `key` can be a string or a custom key typ
 
 Example:
 ```go
-claims, err := helpers.GetContextValue[*auth.RBACClaims](r, auth.DefaultContextKey)
+claims, err := helpers.GetContextValue[*auth.RBACClaims](r, auth.UserContextKey)
 ```
 
 #### Pagination
 
 ##### GetPaginationParams(r *http.Request, defaultPageSize uint) PaginationParams
-Gets pagination params from query. `page` is at least 1, and `pageSize` is capped at `helpers.DefaultMaxPageSize` (or `defaultPageSize` if that is larger). Use `GetPaginationParamsWithMax` for a custom cap, and `params.Offset()` for the SQL offset.
+Gets pagination params from query. `page` is at least 1, and `pageSize` is capped at `helpers.DefaultMaxPageSize` (or `defaultPageSize` if that is larger). Use `GetPaginationParamsWithMax` for a custom cap, `GetPaginationParamsWithLimits` to also clamp `page` (bounding the SQL offset), and `params.Offset()` for the SQL offset.
 
 Example:
 ```go
@@ -601,7 +616,7 @@ The `logger` package provides logging functionality with file and console logger
 Gets the singleton file logger instance.
 
 #### GetConsoleLogger() *ConsoleLogger
-Gets the singleton console logger instance.
+Gets the singleton console logger instance. Lines are written to stdout by a background goroutine, so a slow stdout never blocks callers; when more than 4,096 lines are waiting, new ones are dropped and a count is logged. Call `Flush()` before exiting to write pending lines (`Fatal` does this).
 
 ### FileLogger Methods
 
@@ -711,7 +726,7 @@ id, err := sched.ScheduleProgrammedOneTimeJob(time.Now().Add(2*time.Hour), sched
 ```
 
 ##### ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, jobFunction *jobFunction) (uint64, error)
-Schedules a recurring job every `everyXDays` days at the clock-time extracted from `at`.
+Schedules a recurring job every `everyXDays` days at the clock-time extracted from `at`, in `at`'s location (so `time.UTC` means UTC whatever the server zone is). The wall-clock time is kept across DST changes.
 If today's target time has already passed, first run is moved to the next valid day window.
 
 Example:

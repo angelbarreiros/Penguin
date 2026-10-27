@@ -85,7 +85,7 @@ func JwtAuthRbacWithAudience(audience string) jwtRbacOptionsFunc {
 
 func initJwtAuthRbac(publicKey *ecdsa.PublicKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
 	var opts *jwtRbacAuthOptions = &jwtRbacAuthOptions{
-		ContextKey: DefaultContextKey,
+		ContextKey: UserContextKey,
 	}
 	for _, opt := range options {
 		opt(opts)

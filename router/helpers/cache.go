@@ -11,19 +11,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/angelbarreiros/Penguin/scheduler"
 	"github.com/google/uuid"
 )
 
-// expiringMap is the shared storage behind every keyed cache. Entries are
-// stored as pointers so a scheduled cleaner only deletes the exact entry it
-// was created for (CompareAndDelete) and never a value stored later under the
-// same key. Expiry is also checked on every read, so correctness does not
-// depend on the cleaner running.
+// cacheSweepInterval is how often each keyed cache drops expired entries.
+// Expiry is also checked on every read, so correctness does not depend on it.
+const cacheSweepInterval = time.Minute
+
+// DefaultResponseCacheMaxEntries bounds the HTTP response cache, whose keys
+// are derived from client-controlled request data.
+const DefaultResponseCacheMaxEntries = 10_000
+
+// expiringMap is the shared storage behind every keyed cache. A single
+// goroutine per map sweeps expired entries; maxEntries > 0 caps its size, and
+// writes of new keys are dropped while it is full.
 type expiringMap[K comparable, V any] struct {
-	cache     *sync.Map
-	cleaner   *scheduler.Scheduler
-	closeOnce sync.Once
+	mu         sync.RWMutex
+	entries    map[K]*expiringEntry[V]
+	maxEntries int
+	lastSweep  time.Time
+	closed     bool
+	stop       chan struct{}
+	closeOnce  sync.Once
 }
 
 type expiringEntry[V any] struct {
@@ -37,75 +46,140 @@ func (e *expiringEntry[V]) expired(now time.Time) bool {
 	return !e.expiresAt.IsZero() && !now.Before(e.expiresAt)
 }
 
-type entryCleaner[K comparable, V any] struct {
-	cache *sync.Map
-	key   K
-	entry *expiringEntry[V]
+func newExpiringMap[K comparable, V any](maxEntries int) *expiringMap[K, V] {
+	m := &expiringMap[K, V]{
+		entries:    make(map[K]*expiringEntry[V]),
+		maxEntries: maxEntries,
+		lastSweep:  time.Now(),
+		stop:       make(chan struct{}),
+	}
+	go m.sweepLoop()
+	return m
 }
 
-func (c *entryCleaner[K, V]) Execute() []any {
-	c.cache.CompareAndDelete(c.key, c.entry)
-	return nil
-}
-
-func newExpiringMap[K comparable, V any]() *expiringMap[K, V] {
-	return &expiringMap[K, V]{
-		cache:   &sync.Map{},
-		cleaner: scheduler.NewScheduler(),
+func (m *expiringMap[K, V]) sweepLoop() {
+	ticker := time.NewTicker(cacheSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			m.mu.Lock()
+			m.sweepLocked(time.Now())
+			m.mu.Unlock()
+		case <-m.stop:
+			return
+		}
 	}
 }
 
-// store keeps value for expiration; expiration <= 0 means no expiry.
+// sweepLocked drops expired entries; callers must hold the write lock.
+func (m *expiringMap[K, V]) sweepLocked(now time.Time) {
+	for key, entry := range m.entries {
+		if entry.expired(now) {
+			delete(m.entries, key)
+		}
+	}
+	m.lastSweep = now
+}
+
+func (m *expiringMap[K, V]) setMaxEntries(maxEntries int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxEntries = maxEntries
+}
+
+// store keeps value for expiration; expiration <= 0 means no expiry. It is a
+// no-op once the map is closed, or for a new key while the map is full.
 func (m *expiringMap[K, V]) store(key K, value V, expiration time.Duration) {
 	now := time.Now()
 	entry := &expiringEntry[V]{value: value, expiration: expiration, generated: now}
 	if expiration > 0 {
 		entry.expiresAt = now.Add(expiration)
 	}
-	m.cache.Store(key, entry)
-	if expiration > 0 {
-		// If scheduling fails (cache closed) the entry still expires lazily.
-		_, _ = m.cleaner.ScheduleOneTimeJob(expiration, scheduler.JobFunction(&entryCleaner[K, V]{cache: m.cache, key: key, entry: entry}))
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
 	}
+	if _, exists := m.entries[key]; !exists && m.maxEntries > 0 && len(m.entries) >= m.maxEntries {
+		if now.Sub(m.lastSweep) >= time.Second {
+			m.sweepLocked(now)
+		}
+		if len(m.entries) >= m.maxEntries {
+			return
+		}
+	}
+	m.entries[key] = entry
 }
 
 func (m *expiringMap[K, V]) load(key K) (*expiringEntry[V], bool) {
-	v, ok := m.cache.Load(key)
+	m.mu.RLock()
+	entry, ok := m.entries[key]
+	m.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
-	entry := v.(*expiringEntry[V])
 	if entry.expired(time.Now()) {
-		m.cache.CompareAndDelete(key, entry)
+		m.mu.Lock()
+		if m.entries[key] == entry {
+			delete(m.entries, key)
+		}
+		m.mu.Unlock()
 		return nil, false
 	}
 	return entry, true
 }
 
 func (m *expiringMap[K, V]) delete(key K) {
-	m.cache.Delete(key)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.entries, key)
 }
 
+// rangeLive calls fn on a snapshot of the live entries, so fn may modify the
+// cache.
 func (m *expiringMap[K, V]) rangeLive(fn func(key K, entry *expiringEntry[V]) bool) {
+	type pair struct {
+		key   K
+		entry *expiringEntry[V]
+	}
 	now := time.Now()
-	m.cache.Range(func(k, v any) bool {
-		entry := v.(*expiringEntry[V])
-		if entry.expired(now) {
-			m.cache.CompareAndDelete(k, entry)
-			return true
+	m.mu.RLock()
+	live := make([]pair, 0, len(m.entries))
+	for key, entry := range m.entries {
+		if !entry.expired(now) {
+			live = append(live, pair{key, entry})
 		}
-		return fn(k.(K), entry)
-	})
+	}
+	m.mu.RUnlock()
+
+	for _, p := range live {
+		if !fn(p.key, p.entry) {
+			return
+		}
+	}
 }
 
 func (m *expiringMap[K, V]) clear() {
-	m.cache.Clear()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	clear(m.entries)
+}
+
+func (m *expiringMap[K, V]) isClosed() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.closed
 }
 
 func (m *expiringMap[K, V]) close() {
 	m.closeOnce.Do(func() {
-		m.cleaner.Stop()
-		m.cache.Clear()
+		close(m.stop)
+		m.mu.Lock()
+		m.closed = true
+		clear(m.entries)
+		m.mu.Unlock()
 	})
 }
 
@@ -134,54 +208,72 @@ func NewCacheItem(value any, expiration time.Duration) CacheItem {
 }
 
 var (
-	instance *cleanerCache
-	once     sync.Once
+	instance      *cleanerCache
+	instanceMutex sync.Mutex
 )
 
+// NewCleanerCacheInstance returns the shared response cache, creating a new
+// one if it does not exist yet or was closed. It holds at most
+// DefaultResponseCacheMaxEntries entries unless changed with SetMaxEntries.
 func NewCleanerCacheInstance() *cleanerCache {
-	once.Do(func() {
-		instance = &cleanerCache{entries: newExpiringMap[string, CacheItem]()}
-	})
+	instanceMutex.Lock()
+	defer instanceMutex.Unlock()
+	if instance == nil || instance.entries.isClosed() {
+		instance = &cleanerCache{entries: newExpiringMap[string, CacheItem](DefaultResponseCacheMaxEntries)}
+	}
 	return instance
 }
 func (c *cleanerCache) Close() {
 	c.entries.close()
 }
+
+// SetMaxEntries caps the number of cached responses; <= 0 removes the cap.
+func (c *cleanerCache) SetMaxEntries(maxEntries int) {
+	c.entries.setMaxEntries(maxEntries)
+}
 func (c *cleanerCache) Set(key string, i CacheItem) {
 	c.entries.store(key, i, i.expiration)
 }
+
+// Get looks up key and, when w is not nil, sets the cache headers on both
+// hits and misses so no cached-response path is stored by shared caches.
 func (c *cleanerCache) Get(w http.ResponseWriter, key string) (CacheItem, bool) {
 	entry, ok := c.entries.load(key)
+	if w != nil {
+		// private: entries may be keyed on Authorization or Cookie, so shared
+		// caches must never store them.
+		w.Header().Add("Vary", "Accept, Accept-Language, Authorization, Cookie")
+	}
 	if !ok {
 		if w != nil {
 			w.Header().Set("Cache-Status", "MISS")
+			w.Header().Set("Cache-Control", "private")
 		}
 		return CacheItem{}, false
 	}
 	cacheItem := entry.value
 	if w != nil {
 		w.Header().Set("Cache-Status", "HIT")
-		// private: entries may be keyed on Authorization, so shared caches
-		// must never store them.
 		cacheControl := "private"
 		if cacheItem.expiration > 0 {
 			cacheControl += ", max-age=" + strconv.Itoa(int(cacheItem.expiration.Seconds()))
 		}
 		w.Header().Set("Cache-Control", cacheControl)
 		w.Header().Set("Age", strconv.Itoa(int(time.Since(cacheItem.generated).Seconds())))
-		w.Header().Add("Vary", "Accept, Accept-Language, Authorization")
 	}
 	return cacheItem, true
 }
 
-// GenerateCacheKey builds a key from the method, path, every query value
-// (escaped and sorted) and the Accept, Accept-Language and Authorization
-// headers. The Authorization value is hashed so tokens are never kept in memory
-// as cache keys.
+// GenerateCacheKey builds a key from the method, host, path, every query
+// value (escaped and sorted) and the Accept, Accept-Language, Authorization
+// and Cookie headers. Authorization and Cookie are hashed so credentials are
+// never kept in memory as cache keys.
 func GenerateCacheKey(r *http.Request) string {
 	var sb strings.Builder
 
 	sb.WriteString(r.Method)
+	sb.WriteString(" ")
+	sb.WriteString(url.PathEscape(strings.ToLower(r.Host)))
 	sb.WriteString(" ")
 	sb.WriteString(url.PathEscape(r.URL.Path))
 
@@ -190,12 +282,12 @@ func GenerateCacheKey(r *http.Request) string {
 		sb.WriteString(query.Encode())
 	}
 
-	for _, header := range []string{"Accept", "Accept-Language", "Authorization"} {
-		value := r.Header.Get(header)
+	for _, header := range []string{"Accept", "Accept-Language", "Authorization", "Cookie"} {
+		value := strings.Join(r.Header.Values(header), "; ")
 		if value == "" {
 			continue
 		}
-		if header == "Authorization" {
+		if header == "Authorization" || header == "Cookie" {
 			sum := sha256.Sum256([]byte(value))
 			value = hex.EncodeToString(sum[:])
 		}
@@ -223,7 +315,7 @@ type uuidCache[T any] struct {
 
 func newUUIDCache[T any]() *uuidCache[T] {
 	return &uuidCache[T]{
-		entries:    newExpiringMap[uuid.UUID, T](),
+		entries:    newExpiringMap[uuid.UUID, T](0),
 		defaultTTL: 0, // No default expiration
 	}
 }
@@ -384,7 +476,7 @@ func GetUUIDCacheInstance[T any](cacheType string) UUIDCache[T] {
 	key := registryKey[T](cacheType)
 	uuidCacheMutex.Lock()
 	defer uuidCacheMutex.Unlock()
-	if instance, ok := uuidCacheInstances[key]; ok {
+	if instance, ok := uuidCacheInstances[key]; ok && !instance.(*uuidCache[T]).entries.isClosed() {
 		return instance.(*uuidCache[T])
 	}
 	newCache := newUUIDCache[T]()
@@ -403,7 +495,7 @@ type stringCache[T any] struct {
 
 func newStringCache[T any]() *stringCache[T] {
 	return &stringCache[T]{
-		entries:    newExpiringMap[string, T](),
+		entries:    newExpiringMap[string, T](0),
 		defaultTTL: 0, // No default expiration
 	}
 }
@@ -547,7 +639,7 @@ func GetStringCacheInstance[T any](cacheType string) StringCache[T] {
 	key := registryKey[T](cacheType)
 	stringCacheMutex.Lock()
 	defer stringCacheMutex.Unlock()
-	if instance, ok := stringCacheInstances[key]; ok {
+	if instance, ok := stringCacheInstances[key]; ok && !instance.(*stringCache[T]).entries.isClosed() {
 		return instance.(*stringCache[T])
 	}
 	newCache := newStringCache[T]()

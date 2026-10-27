@@ -73,6 +73,7 @@ type job struct {
 	interval          time.Duration
 	daysInterval      int
 	timeOfDay         time.Duration
+	location          *time.Location
 	nextRun           time.Time
 	heapIndex         int
 	running           bool // waitForCompletion run in flight; reschedule pending
@@ -283,13 +284,16 @@ func (s *Scheduler) ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, 
 	}
 
 	id := atomic.AddUint64(&jobCounter, 1)
+	// The wall-clock time of at is kept in at's own location, so "09:00 UTC"
+	// runs at 09:00 UTC whatever the server's local zone is.
 	hour, minute, second := at.Clock()
 	timeOfDay := time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute + time.Duration(second)*time.Second + time.Duration(at.Nanosecond())
+	location := at.Location()
 	var nextRun time.Time
 	if opt.RunImmediately {
 		nextRun = time.Now()
 	} else {
-		nextRun = nextRunEveryXDaysAt(time.Now(), everyXDays, timeOfDay)
+		nextRun = nextRunEveryXDaysAt(time.Now(), everyXDays, timeOfDay, location)
 	}
 
 	periodicAtJob := &job{
@@ -297,6 +301,7 @@ func (s *Scheduler) ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, 
 		mode:              jobModeEveryXDaysAt,
 		daysInterval:      everyXDays,
 		timeOfDay:         timeOfDay,
+		location:          location,
 		nextRun:           nextRun,
 		heapIndex:         -1,
 		jobFunction:       jobFunction,
@@ -408,7 +413,7 @@ func (s *Scheduler) sleepLocked() {
 	s.stateMux.Lock()
 	defer s.stateMux.Unlock()
 	if !s.isSleeping {
-		logger.GetConsoleLogger().Info("Scheduler Sleeps (no jobs)")
+		logger.GetConsoleLogger().Debug("Scheduler Sleeps (no jobs)")
 		s.isSleeping = true
 	}
 }
@@ -417,7 +422,7 @@ func (s *Scheduler) awakeLocked() {
 	s.stateMux.Lock()
 	defer s.stateMux.Unlock()
 	if s.isSleeping {
-		logger.GetConsoleLogger().Info("Scheduler awakes")
+		logger.GetConsoleLogger().Debug("Scheduler awakes")
 		s.isSleeping = false
 	}
 }
@@ -434,7 +439,7 @@ func newScheduler() *Scheduler {
 	}
 	heap.Init(&s.queue)
 
-	logger.GetConsoleLogger().Info("Scheduler initialized")
+	logger.GetConsoleLogger().Debug("Scheduler initialized")
 	s.wg.Add(1)
 	go s.schedulerLoop()
 
@@ -573,7 +578,7 @@ func (s *Scheduler) handleCommand(cmd schedulerCommand) bool {
 		case jobModeInterval:
 			j.nextRun = now.Add(j.interval)
 		case jobModeEveryXDaysAt:
-			j.nextRun = nextRunAfterXDays(now, j.daysInterval, j.timeOfDay)
+			j.nextRun = nextRunAfterXDays(now, j.daysInterval, j.timeOfDay, j.location)
 		}
 		j.jobStatus.nextRunTime = j.nextRun
 		heap.Push(&s.queue, j)
@@ -660,7 +665,7 @@ func (s *Scheduler) executeDueJobs() {
 				heap.Push(&s.queue, storedJob)
 
 			case jobModeEveryXDaysAt:
-				storedJob.nextRun = nextRunAfterXDays(now, storedJob.daysInterval, storedJob.timeOfDay)
+				storedJob.nextRun = nextRunAfterXDays(now, storedJob.daysInterval, storedJob.timeOfDay, storedJob.location)
 				storedJob.jobStatus.nextRunTime = storedJob.nextRun
 				heap.Push(&s.queue, storedJob)
 			}
@@ -772,17 +777,26 @@ func (s *Scheduler) unPauseById(id uint64) error {
 	return nil
 }
 
-func nextRunEveryXDaysAt(from time.Time, days int, timeOfDay time.Duration) time.Time {
-	dayStart := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
-	candidate := dayStart.Add(timeOfDay)
+// nextRunEveryXDaysAt returns the first time at timeOfDay (wall clock in loc)
+// after from, today or days from today. The wall clock is built with
+// time.Date, so DST changes do not shift it.
+func nextRunEveryXDaysAt(from time.Time, days int, timeOfDay time.Duration, loc *time.Location) time.Time {
+	from = from.In(loc)
+	hour := int(timeOfDay / time.Hour)
+	minute := int(timeOfDay % time.Hour / time.Minute)
+	second := int(timeOfDay % time.Minute / time.Second)
+	nanosecond := int(timeOfDay % time.Second)
+	year, month, day := from.Date()
+
+	candidate := time.Date(year, month, day, hour, minute, second, nanosecond, loc)
 	if !candidate.After(from) {
-		candidate = candidate.AddDate(0, 0, days)
+		candidate = time.Date(year, month, day+days, hour, minute, second, nanosecond, loc)
 	}
 	return candidate
 }
 
-func nextRunAfterXDays(from time.Time, days int, timeOfDay time.Duration) time.Time {
-	next := nextRunEveryXDaysAt(from, days, timeOfDay)
+func nextRunAfterXDays(from time.Time, days int, timeOfDay time.Duration, loc *time.Location) time.Time {
+	next := nextRunEveryXDaysAt(from, days, timeOfDay, loc)
 	for !next.After(from) {
 		next = next.AddDate(0, 0, days)
 	}

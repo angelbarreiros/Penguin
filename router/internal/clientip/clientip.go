@@ -9,15 +9,33 @@ import (
 	"strings"
 )
 
-// Resolver trusts X-Forwarded-For / X-Real-IP only when the direct peer is in
-// one of the trusted proxy prefixes.
+// Resolver trusts forwarding headers only when the direct peer is in one of
+// the trusted proxy prefixes.
 type Resolver struct {
 	trusted []netip.Prefix
+	// header is the only forwarding header read; empty means X-Forwarded-For
+	// with a fallback to X-Real-IP when X-Forwarded-For is absent.
+	header string
 }
 
 // NewResolver parses CIDRs or single IPs. Invalid entries cause a panic so
 // misconfiguration is caught at startup.
-func NewResolver(trustedProxies []string) *Resolver {
+//
+// header names the single forwarding header the proxy sets ("X-Forwarded-For"
+// or "X-Real-IP"). Naming it is recommended: when it is omitted both headers
+// are read, so a proxy that sets only X-Real-IP but forwards a client-supplied
+// X-Forwarded-For lets clients choose their address.
+func NewResolver(trustedProxies []string, header ...string) *Resolver {
+	if len(header) > 1 {
+		panic("clientip: more than one header provided")
+	}
+	var forwardedHeader string
+	if len(header) == 1 {
+		forwardedHeader = http.CanonicalHeaderKey(strings.TrimSpace(header[0]))
+		if forwardedHeader != "X-Forwarded-For" && forwardedHeader != "X-Real-Ip" {
+			panic("clientip: unsupported forwarding header " + header[0])
+		}
+	}
 	var prefixes []netip.Prefix
 	for _, p := range trustedProxies {
 		p = strings.TrimSpace(p)
@@ -38,7 +56,7 @@ func NewResolver(trustedProxies []string) *Resolver {
 		}
 		prefixes = append(prefixes, prefix.Masked())
 	}
-	return &Resolver{trusted: prefixes}
+	return &Resolver{trusted: prefixes, header: forwardedHeader}
 }
 
 func (res *Resolver) isTrusted(addr netip.Addr) bool {
@@ -73,7 +91,15 @@ func (res *Resolver) ClientIP(r *http.Request) string {
 		return peer.String()
 	}
 
-	if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+	if res.header == "X-Real-Ip" {
+		if addr, ok := parseAddr(r.Header.Get("X-Real-IP")); ok {
+			return addr.String()
+		}
+		return peer.String()
+	}
+
+	xff := r.Header.Values("X-Forwarded-For")
+	if len(xff) > 0 {
 		hops := strings.Split(strings.Join(xff, ","), ",")
 		for i := len(hops) - 1; i >= 0; i-- {
 			addr, ok := parseAddr(hops[i])
@@ -85,8 +111,10 @@ func (res *Resolver) ClientIP(r *http.Request) string {
 			}
 		}
 	}
-	if addr, ok := parseAddr(r.Header.Get("X-Real-IP")); ok {
-		return addr.String()
+	if res.header == "" && len(xff) == 0 {
+		if addr, ok := parseAddr(r.Header.Get("X-Real-IP")); ok {
+			return addr.String()
+		}
 	}
 	return peer.String()
 }

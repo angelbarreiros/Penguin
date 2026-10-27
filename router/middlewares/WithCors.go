@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -34,8 +35,9 @@ func corsMiddleware(corsConfig *cors.CORSConfig) middlewareFunc {
 				header.Add("Vary", "Access-Control-Request-Headers")
 			}
 
-			// Empty origin: same-origin or non-browser request, no CORS headers needed.
-			if origin == "" {
+			// Empty or same origin: non-browser or same-origin request, no CORS
+			// headers needed. Browsers also send Origin on same-origin POSTs.
+			if origin == "" || isSameOrigin(origin, r) {
 				if isPreflight && !corsConfig.OptionsPassthrough() {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -75,4 +77,14 @@ func corsMiddleware(corsConfig *cors.CORSConfig) middlewareFunc {
 			hf(w, r)
 		}
 	}
+}
+
+// isSameOrigin reports whether origin names the host the request was sent to.
+// Only the host is compared, since the scheme is unknown behind a TLS proxy.
+func isSameOrigin(origin string, r *http.Request) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
