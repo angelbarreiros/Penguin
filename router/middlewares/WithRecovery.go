@@ -1,6 +1,8 @@
 package middlewares
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"runtime/debug"
 
@@ -32,6 +34,18 @@ func (h *headerTracker) Write(b []byte) (int, error) {
 
 func (h *headerTracker) Unwrap() http.ResponseWriter {
 	return h.ResponseWriter
+}
+
+// Flush lets streaming handlers (e.g. SSE) flush through the wrapper.
+func (h *headerTracker) Flush() {
+	h.wroteHeader = true
+	_ = http.NewResponseController(h.ResponseWriter).Flush()
+}
+
+// Hijack lets handlers (e.g. WebSockets) take over the connection.
+func (h *headerTracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.wroteHeader = true
+	return http.NewResponseController(h.ResponseWriter).Hijack()
 }
 
 func handlePanic(w *headerTracker) {

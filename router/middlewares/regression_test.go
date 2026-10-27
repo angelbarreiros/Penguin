@@ -1,10 +1,12 @@
 package middlewares
 
 import (
+	"container/list"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,7 +45,7 @@ func TestRBACConcurrentRequestsDoNotShareIdentity(t *testing.T) {
 
 	var mismatches, guestsAllowed atomic.Int32
 	handler := WithAuthAndRBAC(rbac, []string{"admin"}, func(_ http.ResponseWriter, r *http.Request) {
-		claims := r.Context().Value(auth.DefaultContextKey).(*auth.RBACClaims)
+		claims := r.Context().Value(auth.UserContextKey).(*auth.RBACClaims)
 		if claims.Subject != r.Header.Get("X-Expect") {
 			mismatches.Add(1)
 		}
@@ -169,7 +171,8 @@ func TestRateLimitTrustedProxyUsesForwardedClient(t *testing.T) {
 func TestRateLimitKeepsFractionalTokens(t *testing.T) {
 	limiter := &rateLimiter{
 		config:    rateLimitConfig{startingLimit: 2, limitPerSec: 5, maxEntries: 10},
-		buckets:   map[string]*tokenBucket{},
+		buckets:   map[string]*list.Element{},
+		lru:       list.New(),
 		lastSweep: time.Now(),
 		idleAfter: time.Hour,
 	}
@@ -187,21 +190,70 @@ func TestRateLimitKeepsFractionalTokens(t *testing.T) {
 	}
 }
 
-func TestRateLimitEvictsIdleBucketsAndCapsEntries(t *testing.T) {
+func TestRateLimitEvictsLeastRecentlyUsedWhenFull(t *testing.T) {
 	limiter := &rateLimiter{
 		config:    rateLimitConfig{startingLimit: 1, limitPerSec: 1, maxEntries: 2},
-		buckets:   map[string]*tokenBucket{},
+		buckets:   map[string]*list.Element{},
+		lru:       list.New(),
+		lastSweep: time.Now(),
+		idleAfter: time.Hour,
+	}
+	now := time.Now()
+	limiter.take("a", now)
+	limiter.take("b", now)
+	if ok, _ := limiter.take("c", now); !ok {
+		t.Fatal("new client rejected while table is full")
+	}
+	if len(limiter.buckets) != 2 {
+		t.Fatalf("tracked clients = %d, want 2", len(limiter.buckets))
+	}
+	if _, tracked := limiter.buckets["a"]; tracked {
+		t.Fatal("least recently used client was not evicted")
+	}
+	if ok, _ := limiter.take("b", now); ok {
+		t.Fatal("recently used client lost its bucket")
+	}
+}
+
+func TestRateLimitSweepsIdleBuckets(t *testing.T) {
+	limiter := &rateLimiter{
+		config:    rateLimitConfig{startingLimit: 1, limitPerSec: 1, maxEntries: 10},
+		buckets:   map[string]*list.Element{},
+		lru:       list.New(),
 		lastSweep: time.Now(),
 		idleAfter: time.Second,
 	}
 	now := time.Now()
 	limiter.take("a", now)
-	limiter.take("b", now)
-	if ok, _ := limiter.take("c", now); ok {
-		t.Fatal("new client admitted while table is full")
+	limiter.take("b", now.Add(1500*time.Millisecond))
+	limiter.take("c", now.Add(2*time.Second))
+	if len(limiter.buckets) != 2 {
+		t.Fatalf("tracked clients = %d, want 2 after sweep", len(limiter.buckets))
 	}
-	if ok, _ := limiter.take("c", now.Add(2*time.Second)); !ok {
-		t.Fatal("idle buckets were not evicted")
+}
+
+func TestRateLimitTableFloodDoesNotLockOutNewClients(t *testing.T) {
+	h := WithRateLimiting(func(http.ResponseWriter, *http.Request) {}, RateLimitOptMaxEntries(100))
+	for i := range 100 {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = fmt.Sprintf("10.1.%d.%d:1", i/256, i%256)
+		h(httptest.NewRecorder(), r)
+	}
+	if code := rateLimitedRequest(h, "203.0.113.7:1", ""); code != http.StatusOK {
+		t.Fatalf("new client status = %d, want 200", code)
+	}
+}
+
+func TestRateLimitGroupsIPv6ByPrefix(t *testing.T) {
+	h := WithRateLimiting(func(http.ResponseWriter, *http.Request) {}, RateLimitOptStartingLimit(1))
+	if code := rateLimitedRequest(h, "[2001:db8:1:2::1]:1", ""); code != http.StatusOK {
+		t.Fatalf("first request status = %d", code)
+	}
+	if code := rateLimitedRequest(h, "[2001:db8:1:2::ffff]:1", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("same /64 status = %d, want 429", code)
+	}
+	if code := rateLimitedRequest(h, "[2001:db8:1:3::1]:1", ""); code != http.StatusOK {
+		t.Fatalf("other /64 status = %d, want 200", code)
 	}
 }
 

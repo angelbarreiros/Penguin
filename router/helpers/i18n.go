@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -114,14 +115,22 @@ func (i *i18n) translateWithLanguage(key string, language string) string {
 	return key
 }
 
-// replaceVariables reemplaza {{0}}, {{1}}, etc. con los valores proporcionados
+var placeholderRegex = regexp.MustCompile(`\{\{(\d+)\}\}`)
+
+// replaceVariables reemplaza {{0}}, {{1}}, etc. con los valores proporcionados.
+// It substitutes in a single pass, so placeholders inside an argument are
+// left as they are.
 func (i *i18n) replaceVariables(text string, args ...any) string {
-	result := text
-	for idx, arg := range args {
-		placeholder := "{{" + strconv.Itoa(idx) + "}}"
-		result = strings.ReplaceAll(result, placeholder, fmt.Sprint(arg))
+	if len(args) == 0 {
+		return text
 	}
-	return result
+	return placeholderRegex.ReplaceAllStringFunc(text, func(placeholder string) string {
+		idx, err := strconv.Atoi(placeholder[2 : len(placeholder)-2])
+		if err != nil || idx >= len(args) {
+			return placeholder
+		}
+		return fmt.Sprint(args[idx])
+	})
 }
 
 // lookupTranslation supports both flat keys and dot-separated nested object paths.

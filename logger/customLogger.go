@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -90,10 +91,24 @@ type FileLogger struct {
 var fileLoggerInstance *FileLogger
 var fileLoggerOnce sync.Once
 
+// consoleBufferSize is how many console lines may wait for stdout before new
+// ones are dropped.
+const consoleBufferSize = 4096
+
+// ConsoleLogger writes from a background goroutine, so a slow or blocked
+// stdout never stalls callers; lines beyond consoleBufferSize are dropped and
+// counted.
 type ConsoleLogger struct {
 	mu      sync.Mutex
 	level   LogLevel
 	colored bool
+	lines   chan consoleLine
+	dropped atomic.Uint64
+}
+
+type consoleLine struct {
+	text    string
+	flushed chan struct{} // set only on Flush markers
 }
 
 var consoleLoggerInstance *ConsoleLogger
@@ -123,7 +138,9 @@ func GetConsoleLogger() *ConsoleLogger {
 		consoleLoggerInstance = &ConsoleLogger{
 			level:   INFO,
 			colored: isTerminal(os.Stdout),
+			lines:   make(chan consoleLine, consoleBufferSize),
 		}
+		go consoleLoggerInstance.writeLoop(os.Stdout)
 	})
 	return consoleLoggerInstance
 }
@@ -258,7 +275,28 @@ func (c *ConsoleLogger) Error(msg string, args ...any) {
 func (c *ConsoleLogger) Fatal(msg string, args ...any) {
 	_, file, line, _ := runtime.Caller(1)
 	c.logWithCaller(FATAL, file, line, msg, args...)
+	c.Flush()
 	os.Exit(1)
+}
+
+// Flush blocks until every line logged so far has been written.
+func (c *ConsoleLogger) Flush() {
+	flushed := make(chan struct{})
+	c.lines <- consoleLine{flushed: flushed}
+	<-flushed
+}
+
+func (c *ConsoleLogger) writeLoop(out io.Writer) {
+	for line := range c.lines {
+		if dropped := c.dropped.Swap(0); dropped > 0 {
+			fmt.Fprintf(out, "[%s] [WARN] console logger dropped %d lines\n", time.Now().Format("2006-01-02 15:04:05.000"), dropped)
+		}
+		if line.flushed != nil {
+			close(line.flushed)
+			continue
+		}
+		io.WriteString(out, line.text)
+	}
 }
 
 func getShortFilePath(file string) string {
@@ -317,9 +355,10 @@ func (l *FileLogger) logWithCaller(level LogLevel, file string, line int, msg st
 
 func (c *ConsoleLogger) logWithCaller(level LogLevel, file string, line int, msg string, args ...any) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	minLevel, colored := c.level, c.colored
+	c.mu.Unlock()
 
-	if level < c.level {
+	if level < minLevel {
 		return
 	}
 
@@ -331,11 +370,11 @@ func (c *ConsoleLogger) logWithCaller(level LogLevel, file string, line int, msg
 	logMsg.WriteString("[")
 	logMsg.WriteString(timestamp)
 	logMsg.WriteString("] [")
-	if c.colored {
+	if colored {
 		logMsg.WriteString(level.Color())
 	}
 	logMsg.WriteString(level.String())
-	if c.colored {
+	if colored {
 		logMsg.WriteString(Reset)
 	}
 	logMsg.WriteString("] [")
@@ -349,7 +388,11 @@ func (c *ConsoleLogger) logWithCaller(level LogLevel, file string, line int, msg
 	}
 	logMsg.WriteString("\n")
 
-	fmt.Print(logMsg.String())
+	select {
+	case c.lines <- consoleLine{text: logMsg.String()}:
+	default:
+		c.dropped.Add(1)
+	}
 }
 
 func (l *FileLogger) openLogFile() {

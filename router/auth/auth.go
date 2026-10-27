@@ -14,10 +14,17 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+type contextKey string
+
+// UserContextKey is the default context key under which the auth middlewares
+// store the authenticated user. Its unexported type means no other package
+// can collide with it.
+var UserContextKey any = contextKey("user")
+
 const (
-	// DefaultContextKey is kept as a plain string for backwards compatibility
-	// with code that reads r.Context().Value("user"). Prefer a custom typed key
-	// via WithCustomContextKey / JwtAuthRbacWithCustomContextKey.
+	// Deprecated: the default key is now UserContextKey. To keep reading
+	// r.Context().Value("user"), pass WithCustomContextKey(DefaultContextKey)
+	// (or JwtAuthRbacWithCustomContextKey) explicitly.
 	DefaultContextKey string = "user"
 )
 

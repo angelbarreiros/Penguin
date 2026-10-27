@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/angelbarreiros/Penguin/router"
+	"github.com/angelbarreiros/Penguin/router/cors"
 	"github.com/angelbarreiros/Penguin/router/helpers"
+	"github.com/angelbarreiros/Penguin/router/middlewares"
 	"github.com/angelbarreiros/Penguin/router/types"
 	"github.com/angelbarreiros/Penguin/scheduler"
 )
@@ -288,4 +290,183 @@ func TestI18nAcceptLanguageQValues(t *testing.T) {
 	if got := i.GetLanguage(r); got != i.DefaultLocale {
 		t.Fatalf("GetLanguage = %q, want default", got)
 	}
+}
+
+func TestGenerateCacheKeySeparatesHostsAndCookies(t *testing.T) {
+	a := httptest.NewRequest(http.MethodGet, "https://a.example/me", nil)
+	a.Header.Set("Cookie", "session=alice")
+	b := httptest.NewRequest(http.MethodGet, "https://b.example/me", nil)
+	b.Header.Set("Cookie", "session=alice")
+	c := httptest.NewRequest(http.MethodGet, "https://a.example/me", nil)
+	c.Header.Set("Cookie", "session=bob")
+	if helpers.GenerateCacheKey(a) == helpers.GenerateCacheKey(b) {
+		t.Fatal("different hosts share a cache key")
+	}
+	if helpers.GenerateCacheKey(a) == helpers.GenerateCacheKey(c) {
+		t.Fatal("different cookies share a cache key")
+	}
+	if strings.Contains(helpers.GenerateCacheKey(a), "alice") {
+		t.Fatal("cookie value stored in plain text")
+	}
+}
+
+func TestResponseCacheIsBoundedAndMarksMissesPrivate(t *testing.T) {
+	cache := helpers.NewCleanerCacheInstance()
+	defer cache.Close()
+	cache.SetMaxEntries(2)
+	cache.Set("a", helpers.NewCacheItem(1, time.Hour))
+	cache.Set("b", helpers.NewCacheItem(2, time.Hour))
+	cache.Set("c", helpers.NewCacheItem(3, time.Hour))
+	if _, ok := cache.Get(nil, "c"); ok {
+		t.Fatal("cache grew past its limit")
+	}
+	cache.Set("a", helpers.NewCacheItem(10, time.Hour))
+	if item, ok := cache.Get(nil, "a"); !ok || item.GetValue() != 10 {
+		t.Fatal("existing key could not be updated while full")
+	}
+
+	w := httptest.NewRecorder()
+	cache.Get(w, "missing")
+	if got := w.Header().Get("Cache-Control"); got != "private" {
+		t.Fatalf("MISS Cache-Control = %q", got)
+	}
+	if !strings.Contains(w.Header().Get("Vary"), "Cookie") {
+		t.Fatalf("MISS Vary = %q", w.Header().Get("Vary"))
+	}
+}
+
+func TestClosedCachesAreNotReturnedAgain(t *testing.T) {
+	cache := helpers.GetStringCacheInstance[int]("closed-registry-test")
+	cache.Close()
+	cache.Store("k", 1, 0)
+	if cache.Len() != 0 {
+		t.Fatal("closed cache accepted a write")
+	}
+	fresh := helpers.GetStringCacheInstance[int]("closed-registry-test")
+	defer fresh.Close()
+	fresh.Store("k", 1, 0)
+	if v, ok := fresh.Load("k"); !ok || v != 1 {
+		t.Fatal("registry returned the closed cache")
+	}
+
+	response := helpers.NewCleanerCacheInstance()
+	response.Close()
+	next := helpers.NewCleanerCacheInstance()
+	defer next.Close()
+	next.Set("k", helpers.NewCacheItem(1, 0))
+	if _, ok := next.Get(nil, "k"); !ok {
+		t.Fatal("NewCleanerCacheInstance returned the closed cache")
+	}
+}
+
+func TestStringCacheRangeMayModifyCache(t *testing.T) {
+	cache := helpers.NewStringCache[int]()
+	defer cache.Close()
+	cache.Store("a", 1, 0)
+	cache.Store("b", 2, 0)
+	cache.Range(func(key string, _ int) bool {
+		cache.Delete(key)
+		return true
+	})
+	if cache.Len() != 0 {
+		t.Fatalf("Len = %d after deleting during Range", cache.Len())
+	}
+}
+
+func TestI18nPlaceholdersAreSubstitutedOnce(t *testing.T) {
+	got := helpers.GetI18nInstance().TranslateWithLanguageWithVars("Hello {{0}}, you have {{1}} msgs", "en", "{{1}}", 5)
+	if got != "Hello {{1}}, you have 5 msgs" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPaginationMaxPage(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/?page=2147483647&pageSize=100", nil)
+	params := helpers.GetPaginationParamsWithLimits(r, 10, 100, 50)
+	if params.Page != 50 || params.Offset() != 4900 {
+		t.Fatalf("got %+v (offset %d)", params, params.Offset())
+	}
+}
+
+func TestRouterAnswersCORSPreflightForCORSRoutes(t *testing.T) {
+	r := router.NewRouter()
+	config := cors.NewCORSConfig(cors.WithAllowedOrigins([]string{"https://app.example"}))
+	var calls atomic.Int32
+	r.NewRoute(router.Route{Path: "/items", Method: router.POST, CORS: config, Handler: func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+	}})
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/items", nil)
+	preflight.Header.Set("Origin", "https://app.example")
+	preflight.Header.Set("Access-Control-Request-Method", "POST")
+	w := httptest.NewRecorder()
+	r.Handler().ServeHTTP(w, preflight)
+	if w.Code != http.StatusNoContent || w.Header().Get("Access-Control-Allow-Origin") != "https://app.example" {
+		t.Fatalf("preflight: status %d, ACAO %q", w.Code, w.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if !strings.Contains(w.Header().Get("Access-Control-Allow-Methods"), "POST") {
+		t.Fatalf("preflight ACAM = %q", w.Header().Get("Access-Control-Allow-Methods"))
+	}
+	if calls.Load() != 0 {
+		t.Fatal("preflight ran the POST handler")
+	}
+
+	post := httptest.NewRequest(http.MethodPost, "/items", nil)
+	post.Header.Set("Origin", "https://app.example")
+	w = httptest.NewRecorder()
+	r.Handler().ServeHTTP(w, post)
+	if calls.Load() != 1 || w.Header().Get("Access-Control-Allow-Origin") != "https://app.example" {
+		t.Fatalf("POST: calls %d, ACAO %q", calls.Load(), w.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if w.Header().Get("Access-Control-Allow-Methods") != "" {
+		t.Fatal("Access-Control-Allow-Methods sent on a non-preflight response")
+	}
+}
+
+func TestRouterRejectsConflictingCORSConfigs(t *testing.T) {
+	r := router.NewRouter()
+	noop := func(http.ResponseWriter, *http.Request) {}
+	r.NewRoute(router.Route{Path: "/x", Method: router.GET, Handler: noop, CORS: cors.NewCORSConfig()})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected a panic for a second CORS config on the same path")
+		}
+	}()
+	r.NewRoute(router.Route{Path: "/x", Method: router.POST, Handler: noop, CORS: cors.NewCORSConfig()})
+}
+
+func TestCorsAllowsSameOriginRequests(t *testing.T) {
+	config := cors.NewCORSConfig(cors.WithAllowedOrigins([]string{"https://app.example"}))
+	h := middlewares.WithCors(config, func(w http.ResponseWriter, r *http.Request) {})
+
+	same := httptest.NewRequest(http.MethodPost, "https://api.example/x", nil)
+	same.Header.Set("Origin", "https://api.example")
+	w := httptest.NewRecorder()
+	h(w, same)
+	if w.Code != http.StatusOK || w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("same origin: status %d, ACAO %q", w.Code, w.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	foreign := httptest.NewRequest(http.MethodPost, "https://api.example/x", nil)
+	foreign.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	h(w, foreign)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("foreign origin status = %d, want 403", w.Code)
+	}
+}
+
+func TestMiddlewareWrappersSupportFlushAndHijack(t *testing.T) {
+	check := func(name string, wrap func(http.HandlerFunc) http.HandlerFunc) {
+		var flusher, hijacker bool
+		wrap(func(w http.ResponseWriter, r *http.Request) {
+			_, flusher = w.(http.Flusher)
+			_, hijacker = w.(http.Hijacker)
+		})(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		if !flusher || !hijacker {
+			t.Errorf("%s: Flusher %v, Hijacker %v", name, flusher, hijacker)
+		}
+	}
+	check("WithRecovery", middlewares.WithRecovery)
+	check("WithLogging", middlewares.WithLogging)
 }
