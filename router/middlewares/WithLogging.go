@@ -5,29 +5,56 @@ import (
 	"time"
 
 	"github.com/angelbarreiros/Penguin/logger"
+	"github.com/angelbarreiros/Penguin/router/internal/clientip"
 )
 
 func WithLogging(hf http.HandlerFunc) http.HandlerFunc {
-	return loggingMiddleware()(hf)
+	return loggingMiddleware(nil)(hf)
 }
 
-func loggingMiddleware() middlewareFunc {
+// WithLoggingTrustedProxies logs the forwarded client IP only when the peer
+// is one of the given proxy IPs/CIDRs.
+func WithLoggingTrustedProxies(trustedProxies []string, hf http.HandlerFunc) http.HandlerFunc {
+	return loggingMiddleware(trustedProxies)(hf)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
+func loggingMiddleware(trustedProxies []string) middlewareFunc {
+	resolver := clientip.NewResolver(trustedProxies)
 	return func(hf http.HandlerFunc) http.HandlerFunc {
 		var l = logger.GetConsoleLogger()
 		return func(w http.ResponseWriter, r *http.Request) {
 			var start time.Time = time.Now()
-			hf(w, r)
-			var duration time.Duration = time.Since(start)
-			var method string = r.Method
-			var path string = r.URL.Path
-			var ip string = r.Header.Get("X-Real-IP")
-			if ip == "" {
-				ip = r.Header.Get("X-Forwarded-For")
+			rec := &statusRecorder{ResponseWriter: w}
+			hf(rec, r)
+			if rec.status == 0 {
+				rec.status = http.StatusOK
 			}
-			if ip == "" {
-				ip = r.RemoteAddr
-			}
-			l.Info("Method: %s, Path: %s, IP: %s, Duration: %s", method, path, ip, duration)
+			// %q escapes control characters so request data cannot forge log lines.
+			l.Info("Method: %q, Path: %q, Status: %d, IP: %q, Duration: %s",
+				r.Method, r.URL.Path, rec.status, resolver.ClientIP(r), time.Since(start))
 		}
 	}
 }

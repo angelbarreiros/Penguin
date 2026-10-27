@@ -70,10 +70,17 @@ Starts the HTTP server on the specified address.
 Parameters:
 - `s`: The server address (e.g., ":8080").
 
+The server is started with read/write/idle timeouts and a header size limit (`router.DefaultServerConfig`). Override them with `SetServerConfig` before starting, and stop gracefully with `Shutdown(ctx)`.
+
 Example:
 ```go
-router.StartServer(":8080")
+r := router.InitRouter() // or router.NewRouter() for an independent instance
+r.SetServerConfig(router.DefaultServerConfig)
+go r.StartServer(":8080")
+defer r.Shutdown(context.Background())
 ```
+
+Routes can be registered at any time, including after the server has started. `HEAD` falls back to the `GET` handler, and an unregistered `OPTIONS` returns `204` with an `Allow` header. `Route.Path` must not contain a method prefix such as `"GET /x"`.
 
 ### HTTP Methods
 Supported HTTP methods:
@@ -93,14 +100,16 @@ The `auth` package provides JWT-based authentication, supporting plain JWT and J
 
 ### Functions
 
-#### LoadPrivateKeyFromFile(keyPem []byte) (*ecdsa.PrivateKey, error)
-Loads an ECDSA private key from PEM bytes.
+#### LoadPrivateKeyFromPEM(keyPem []byte) (*ecdsa.PrivateKey, error)
+Loads an ECDSA private key from PEM bytes, in SEC1 (`EC PRIVATE KEY`) or PKCS#8 (`PRIVATE KEY`) format. `LoadPrivateKeyFromFile` is kept as a deprecated alias.
 
 Example:
 ```go
 keyPem := []byte("-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----")
-privateKey, err := auth.LoadPrivateKeyFromFile(keyPem)
+privateKey, err := auth.LoadPrivateKeyFromPEM(keyPem)
 ```
+
+Both auth types are safe for concurrent use and keep no per-request state. Every request gets a fresh claims value. Tokens must carry `exp`, and only the ES* algorithm that matches the key's curve is accepted. Use `NewJwtAuthWithPublicKey` / `NewJwtAuthWithRbacAndPublicKey` for services that only verify tokens, and `WithIssuer` / `WithAudience` (or `JwtAuthRbacWithIssuer` / `JwtAuthRbacWithAudience`) to enforce `iss` and `aud`.
 
 #### NewJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface) *JwtAuth
 Creates a JWT auth instance.
@@ -170,6 +179,8 @@ config := cors.NewCORSConfig(
 )
 ```
 
+`NewCORSConfig` panics if `AllowAllOrigin` (`*`) is combined with `WithAllowCredentials(true)`. Browsers reject that combination, so list the allowed origins explicitly. Responses that echo an origin carry `Vary: Origin`, and preflights from disallowed origins get `403` with no CORS headers.
+
 #### WithAllowedOrigins(origins []string) func(*CORSConfig)
 Sets allowed origins.
 
@@ -208,8 +219,10 @@ handler := middlewares.WithAuthMiddleware(jwtAuth, func(w http.ResponseWriter, r
 
 The timeout option is optional. Without it, the middleware inherits the incoming request context without adding a deadline.
 
+Passing a nil `auth` panics at construction, so authentication can never be silently skipped.
+
 #### WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf handleFunc, opts ...authMiddlewareOption) handleFunc
-Applies JWT authentication with RBAC.
+Applies JWT authentication with RBAC. The role check runs against the user returned by `GetUser` for the same request. Custom implementations of `RBACAuthInterface` must implement `RBAC(user any, allowedRoles []string) bool`.
 
 Example:
 ```go
@@ -302,6 +315,8 @@ The `helpers` package provides utility functions for common HTTP operations.
 
 ### Cache
 
+All caches check expiry on every read. Re-storing a key resets its TTL, and an expiration `<= 0` means the entry never expires. Each keyed cache (`NewStringCache`, `NewUUIDCache`, `NewCleanerCacheInstance`) owns its own cleaner, so call `Close()` when you are done with it. `Get*CacheInstance` registries are keyed by both name and value type. Cache hits are sent with `Cache-Control: private`, and `GenerateCacheKey` hashes the `Authorization` header.
+
 #### NewCacheItem(value any, expiration time.Duration) CacheItem
 Creates a cache item.
 
@@ -357,18 +372,18 @@ err := helpers.DeserializeBodyWithLimit(r, &user, 1024)
 
 #### Context
 
-##### GetContextValue[T any](r *http.Request, key string) (T, error)
-Gets typed value from request context.
+##### GetContextValue[T any](r *http.Request, key any) (T, error)
+Gets typed value from request context. `key` can be a string or a custom key type.
 
 Example:
 ```go
-user, err := helpers.GetContextValue[User](r, "user")
+claims, err := helpers.GetContextValue[*auth.RBACClaims](r, auth.DefaultContextKey)
 ```
 
 #### Pagination
 
 ##### GetPaginationParams(r *http.Request, defaultPageSize uint) PaginationParams
-Gets pagination params from query.
+Gets pagination params from query. `page` is at least 1, and `pageSize` is capped at `helpers.DefaultMaxPageSize` (or `defaultPageSize` if that is larger). Use `GetPaginationParamsWithMax` for a custom cap, and `params.Offset()` for the SQL offset.
 
 Example:
 ```go
@@ -394,7 +409,7 @@ id, err := helpers.GetUUidPathValue("uuid", r)
 ```
 
 ##### GetStringPathValue(identifier string, r *http.Request, options ...MaxStringLengthOption) (string, error)
-Gets sanitized string from path value.
+Gets a trimmed string from a path value, limited to the given number of characters (runes). The value is not modified: use parameterised queries and output encoding rather than relying on input stripping.
 
 Example:
 ```go
@@ -512,7 +527,7 @@ helpers.SendNoContentResponse(w)
 ### Tokens
 
 #### GenerateJwtToken(claims jwt.Claims, secret *ecdsa.PrivateKey) (string, error)
-Generates JWT token.
+Generates JWT token signed with the ES* method matching the key's curve (P-256 → ES256, P-384 → ES384, P-521 → ES512). Set `ExpiresAt`: tokens without `exp` are rejected by the auth types.
 
 Example:
 ```go
@@ -656,10 +671,13 @@ The `scheduler` package provides asynchronous job scheduling using a timer + pri
 ### Functions
 
 #### StartScheduler() *Scheduler
-Starts the singleton scheduler instance.
+Starts the shared singleton scheduler instance. Stopping it affects every user of the singleton.
+
+#### NewScheduler() *Scheduler
+Starts an independent scheduler owned by the caller.
 
 #### JobFunction(f JobFuncInterface) *jobFunction
-Creates a job function.
+Creates a job function. A job function can be scheduled only once, so create a new one per job. Panics inside `Execute` are recovered and logged, and removing or stopping a job while it runs is safe.
 
 ### Scheduler Methods
 
@@ -738,3 +756,7 @@ Adds a return channel to the job function.
 
 
 
+
+## License
+
+Penguin is licensed under the [Apache License 2.0](LICENSE).

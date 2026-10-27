@@ -2,99 +2,61 @@ package auth
 
 import (
 	"crypto/ecdsa"
-	"fmt"
 	"net/http"
-	"strings"
-	"sync"
-	"time"
-
 	"slices"
-
-	"github.com/golang-jwt/jwt/v5"
+	"sync"
 )
 
-type jwtRbacOptionsFunc func(*RBACJwtAuth)
+type jwtRbacOptionsFunc func(*jwtRbacAuthOptions)
+
+// RBACJwtAuth is safe for concurrent use: it keeps no per-request state.
 type RBACJwtAuth struct {
-	authKey     *ecdsa.PrivateKey
-	claimsType  rBACClaimsInterface
-	tokenString string
-	options     *jwtRbacAuthOptions
+	verifier *verifier
+	options  *jwtRbacAuthOptions
 }
 type jwtRbacAuthOptions struct {
 	ContextKey any
+	Issuer     string
+	Audience   string
 }
 
 var jwtRbacAuthInstance *RBACJwtAuth
 var jwtRbacOnce sync.Once
 
 func NewJwtAuthWithRbac(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
-	return initJwtAuthRbac(secret, claimsType, options...)
+	return initJwtAuthRbac(publicKeyOf(secret), claimsType, options...)
+}
+
+// NewJwtAuthWithRbacAndPublicKey verifies tokens without needing the signing key.
+func NewJwtAuthWithRbacAndPublicKey(publicKey *ecdsa.PublicKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
+	return initJwtAuthRbac(publicKey, claimsType, options...)
 }
 
 func NewSingletonJwtAuthWithRbac(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
-	jwtRbacOnce.Do(func() { initJwtAuthRbacInstance(secret, claimsType, options...) })
+	jwtRbacOnce.Do(func() { jwtRbacAuthInstance = initJwtAuthRbac(publicKeyOf(secret), claimsType, options...) })
 	return jwtRbacAuthInstance
 }
 
+// Authorize checks that a well-formed bearer token is present.
 func (j *RBACJwtAuth) Authorize(r *http.Request) (bool, error) {
-	var jwtTokenString string = r.Header.Get("Authorization")
-	if strings.TrimSpace(jwtTokenString) == "" {
-		return false, fmt.Errorf("authorization header is missing")
+	if _, err := bearerToken(r); err != nil {
+		return false, err
 	}
-	if !strings.HasPrefix(jwtTokenString, "Bearer ") {
-		return false, fmt.Errorf("authorization header must start with 'bearer '")
-	}
-
-	var tokenParts []string = strings.SplitN(jwtTokenString, "Bearer ", 2)
-	if len(tokenParts) != 2 || strings.TrimSpace(tokenParts[1]) == "" {
-		return false, fmt.Errorf("bearer token is missing or malformed")
-	}
-
-	var tokenString string = strings.TrimSpace(tokenParts[1])
-	j.tokenString = tokenString
 	return true, nil
 }
+
+// GetUser verifies the request's token and returns a new claims value.
 func (j *RBACJwtAuth) GetUser(r *http.Request) (any, error) {
-	var jwtToken *jwt.Token
-	var err error
-
-	jwtToken, err = jwt.ParseWithClaims(j.tokenString, j.claimsType, func(t *jwt.Token) (any, error) {
-		return &j.authKey.PublicKey, nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse token: %v", err)
-	}
-
-	if !jwtToken.Valid {
-		return nil, fmt.Errorf("token is invalid")
-	}
-
-	if jwtToken == nil {
-		return nil, fmt.Errorf("no token available")
-	}
-	var expirationTime *jwt.NumericDate
-	expirationTime, err = jwtToken.Claims.GetExpirationTime()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get expiration time: %v", err)
-	}
-	if expirationTime == nil {
-		return nil, fmt.Errorf("expiration time is missing")
-
-	}
-	if expirationTime.Before(time.Now()) {
-		return nil, fmt.Errorf("token has expired")
-	}
-
-	return jwtToken.Claims, nil
+	return j.verifier.parse(r)
 }
-func (j *RBACJwtAuth) RBAC(allowedRoles []string) bool {
 
-	var roles []string = j.claimsType.GetRoles()
-	if len(roles) == 0 {
+// RBAC reports whether user (as returned by GetUser) has any of allowedRoles.
+func (j *RBACJwtAuth) RBAC(user any, allowedRoles []string) bool {
+	claims, ok := user.(rBACClaimsInterface)
+	if !ok {
 		return false
 	}
-	for _, role := range roles {
+	for _, role := range claims.GetRoles() {
 		if slices.Contains(allowedRoles, role) {
 			return true
 		}
@@ -106,25 +68,30 @@ func (j *RBACJwtAuth) GetContextKey() any {
 	return j.options.ContextKey
 }
 func JwtAuthRbacWithCustomContextKey(key any) jwtRbacOptionsFunc {
-	return func(ja *RBACJwtAuth) {
-		ja.options.ContextKey = key
+	return func(o *jwtRbacAuthOptions) {
+		o.ContextKey = key
+	}
+}
+func JwtAuthRbacWithIssuer(issuer string) jwtRbacOptionsFunc {
+	return func(o *jwtRbacAuthOptions) {
+		o.Issuer = issuer
+	}
+}
+func JwtAuthRbacWithAudience(audience string) jwtRbacOptionsFunc {
+	return func(o *jwtRbacAuthOptions) {
+		o.Audience = audience
 	}
 }
 
-func initJwtAuthRbacInstance(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) {
-	jwtRbacAuthInstance = initJwtAuthRbac(secret, claimsType, options...)
-}
-func initJwtAuthRbac(secret *ecdsa.PrivateKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
-	var jwtAuth *RBACJwtAuth = &RBACJwtAuth{
-		authKey:    secret,
-		claimsType: claimsType,
-		options: &jwtRbacAuthOptions{
-			ContextKey: DefaultContextKey,
-		},
+func initJwtAuthRbac(publicKey *ecdsa.PublicKey, claimsType rBACClaimsInterface, options ...jwtRbacOptionsFunc) *RBACJwtAuth {
+	var opts *jwtRbacAuthOptions = &jwtRbacAuthOptions{
+		ContextKey: DefaultContextKey,
 	}
-
 	for _, opt := range options {
-		opt(jwtAuth)
+		opt(opts)
 	}
-	return jwtAuth
+	return &RBACJwtAuth{
+		verifier: newVerifier(publicKey, claimsType, opts.Issuer, opts.Audience),
+		options:  opts,
+	}
 }

@@ -2,8 +2,6 @@ package cors
 
 import (
 	"slices"
-
-	"github.com/angelbarreiros/Penguin/logger"
 )
 
 const (
@@ -43,6 +41,22 @@ func (c *CORSConfig) OptionsPassthrough() bool {
 	return c.optionsPassthrough
 }
 
+// AllowsAllOrigins reports whether the wildcard origin is configured.
+func (c *CORSConfig) AllowsAllOrigins() bool {
+	return slices.Contains(c.allowedOrigins, AllowAllOrigin)
+}
+
+// IsOriginAllowed reports whether origin may access the resource.
+func (c *CORSConfig) IsOriginAllowed(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	return c.AllowsAllOrigins() || slices.Contains(c.allowedOrigins, origin)
+}
+
+// NewCORSConfig panics when AllowAllOrigin (*) is combined with
+// AllowCredentials=true: browsers reject that combination, and the usual
+// workaround (reflecting any origin with credentials) is a security hole.
 func NewCORSConfig(options ...func(*CORSConfig)) *CORSConfig {
 	var config *CORSConfig = &CORSConfig{
 		allowedOrigins: []string{},
@@ -51,6 +65,8 @@ func NewCORSConfig(options ...func(*CORSConfig)) *CORSConfig {
 			"Origin",
 			"Accept",
 			"X-Requested-With",
+			"Content-Type",
+			"Authorization",
 		},
 		exposedHeaders:     []string{},
 		allowCredentials:   false,
@@ -62,11 +78,8 @@ func NewCORSConfig(options ...func(*CORSConfig)) *CORSConfig {
 		option(config)
 	}
 
-	// Validate: AllowAllOrigin (*) + AllowCredentials = true is invalid per CORS spec
-	if config.allowCredentials && len(config.allowedOrigins) > 0 {
-		if slices.Contains(config.allowedOrigins, AllowAllOrigin) {
-			logger.GetConsoleLogger().Warn("CORS Configuration Warning: AllowAllOrigin (*) with AllowCredentials=true is invalid per CORS spec. Browsers will ignore credentials. Consider using a specific list of allowed origins with credentials.")
-		}
+	if config.allowCredentials && config.AllowsAllOrigins() {
+		panic("cors: AllowAllOrigin (*) cannot be combined with AllowCredentials=true; list the allowed origins explicitly")
 	}
 
 	return config

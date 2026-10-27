@@ -3,7 +3,6 @@ package helpers
 import (
 	"database/sql"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -19,7 +18,7 @@ func GetNullUint64QueryParam(queryParameter string, r *http.Request) (sql.NullIn
 	if !numericRegex.MatchString(id) {
 		return sql.NullInt64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
 	}
-	idUint, err := strconv.ParseUint(id, 10, 64)
+	idUint, err := strconv.ParseUint(id, 10, 63)
 	if err != nil {
 		return sql.NullInt64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
 	}
@@ -31,7 +30,7 @@ func GetNullInt64QueryParam(queryParameter string, r *http.Request) (sql.NullInt
 	if id == "" {
 		return sql.NullInt64{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) {
+	if !signedNumericRegex.MatchString(id) {
 		return sql.NullInt64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int")
 	}
 	idInt, err := strconv.ParseInt(id, 10, 64)
@@ -123,7 +122,7 @@ func GetNullFloat64QueryParam(queryParameter string, r *http.Request) (sql.NullF
 	if id == "" {
 		return sql.NullFloat64{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) && !regexp.MustCompile(`^[0-9]*\.?[0-9]+$`).MatchString(id) {
+	if !floatRegex.MatchString(id) {
 		return sql.NullFloat64{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
 	}
 	idFloat, err := strconv.ParseFloat(id, 64)
@@ -138,7 +137,7 @@ func GetNullInt16QueryParam(queryParameter string, r *http.Request) (sql.NullInt
 	if id == "" {
 		return sql.NullInt16{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) {
+	if !signedNumericRegex.MatchString(id) {
 		return sql.NullInt16{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int16")
 	}
 	idInt, err := strconv.ParseInt(id, 10, 16)
@@ -153,7 +152,7 @@ func GetNullInt32QueryParam(queryParameter string, r *http.Request) (sql.NullInt
 	if id == "" {
 		return sql.NullInt32{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) {
+	if !signedNumericRegex.MatchString(id) {
 		return sql.NullInt32{Valid: false}, routerErrors.ErrQueryParameterWrongType(queryParameter, "int32")
 	}
 	idInt, err := strconv.ParseInt(id, 10, 32)

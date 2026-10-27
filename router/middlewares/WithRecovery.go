@@ -9,17 +9,47 @@ import (
 
 func WithRecovery(hf http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		defer handlePanic(w)
-		hf(w, r)
+		rec := &headerTracker{ResponseWriter: w}
+		defer handlePanic(rec)
+		hf(rec, r)
 	}
 }
 
-func handlePanic(w http.ResponseWriter) {
-	if err := recover(); err != nil {
-		logger.GetConsoleLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
-		logger.GetFileLogger().Error("Panic recovered: %v\nStack: %s", err, debug.Stack())
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "Internal Server Error"}`))
+type headerTracker struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (h *headerTracker) WriteHeader(code int) {
+	h.wroteHeader = true
+	h.ResponseWriter.WriteHeader(code)
+}
+
+func (h *headerTracker) Write(b []byte) (int, error) {
+	h.wroteHeader = true
+	return h.ResponseWriter.Write(b)
+}
+
+func (h *headerTracker) Unwrap() http.ResponseWriter {
+	return h.ResponseWriter
+}
+
+func handlePanic(w *headerTracker) {
+	err := recover()
+	if err == nil {
+		return
 	}
+	// net/http uses ErrAbortHandler to abort a response on purpose.
+	if err == http.ErrAbortHandler {
+		panic(err)
+	}
+	stack := debug.Stack()
+	logger.GetConsoleLogger().Error("Panic recovered: %v\nStack: %s", err, stack)
+	logger.GetFileLogger().Error("Panic recovered: %v\nStack: %s", err, stack)
+	if w.wroteHeader {
+		// The response is already partially sent; abort the connection rather
+		// than appending an error body to it.
+		panic(http.ErrAbortHandler)
+	}
+	writeJSONError(w, http.StatusInternalServerError, "Internal Server Error")
 }

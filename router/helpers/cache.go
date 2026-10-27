@@ -1,8 +1,11 @@
 package helpers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
-	"sort"
+	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,19 +15,104 @@ import (
 	"github.com/google/uuid"
 )
 
-type cleaner struct {
-	key   string
-	cache *sync.Map
+// expiringMap is the shared storage behind every keyed cache. Entries are
+// stored as pointers so a scheduled cleaner only deletes the exact entry it
+// was created for (CompareAndDelete) and never a value stored later under the
+// same key. Expiry is also checked on every read, so correctness does not
+// depend on the cleaner running.
+type expiringMap[K comparable, V any] struct {
+	cache     *sync.Map
+	cleaner   *scheduler.Scheduler
+	closeOnce sync.Once
 }
 
-func (c *cleaner) Execute() []any {
-	c.cache.Delete(c.key)
+type expiringEntry[V any] struct {
+	value      V
+	expiration time.Duration
+	generated  time.Time
+	expiresAt  time.Time // zero = never expires
+}
+
+func (e *expiringEntry[V]) expired(now time.Time) bool {
+	return !e.expiresAt.IsZero() && !now.Before(e.expiresAt)
+}
+
+type entryCleaner[K comparable, V any] struct {
+	cache *sync.Map
+	key   K
+	entry *expiringEntry[V]
+}
+
+func (c *entryCleaner[K, V]) Execute() []any {
+	c.cache.CompareAndDelete(c.key, c.entry)
 	return nil
 }
 
+func newExpiringMap[K comparable, V any]() *expiringMap[K, V] {
+	return &expiringMap[K, V]{
+		cache:   &sync.Map{},
+		cleaner: scheduler.NewScheduler(),
+	}
+}
+
+// store keeps value for expiration; expiration <= 0 means no expiry.
+func (m *expiringMap[K, V]) store(key K, value V, expiration time.Duration) {
+	now := time.Now()
+	entry := &expiringEntry[V]{value: value, expiration: expiration, generated: now}
+	if expiration > 0 {
+		entry.expiresAt = now.Add(expiration)
+	}
+	m.cache.Store(key, entry)
+	if expiration > 0 {
+		// If scheduling fails (cache closed) the entry still expires lazily.
+		_, _ = m.cleaner.ScheduleOneTimeJob(expiration, scheduler.JobFunction(&entryCleaner[K, V]{cache: m.cache, key: key, entry: entry}))
+	}
+}
+
+func (m *expiringMap[K, V]) load(key K) (*expiringEntry[V], bool) {
+	v, ok := m.cache.Load(key)
+	if !ok {
+		return nil, false
+	}
+	entry := v.(*expiringEntry[V])
+	if entry.expired(time.Now()) {
+		m.cache.CompareAndDelete(key, entry)
+		return nil, false
+	}
+	return entry, true
+}
+
+func (m *expiringMap[K, V]) delete(key K) {
+	m.cache.Delete(key)
+}
+
+func (m *expiringMap[K, V]) rangeLive(fn func(key K, entry *expiringEntry[V]) bool) {
+	now := time.Now()
+	m.cache.Range(func(k, v any) bool {
+		entry := v.(*expiringEntry[V])
+		if entry.expired(now) {
+			m.cache.CompareAndDelete(k, entry)
+			return true
+		}
+		return fn(k.(K), entry)
+	})
+}
+
+func (m *expiringMap[K, V]) clear() {
+	m.cache.Clear()
+}
+
+func (m *expiringMap[K, V]) close() {
+	m.closeOnce.Do(func() {
+		m.cleaner.Stop()
+		m.cache.Clear()
+	})
+}
+
+// HTTP response cache
+
 type cleanerCache struct {
-	cache   *sync.Map
-	cleaner *scheduler.Scheduler
+	entries *expiringMap[string, CacheItem]
 }
 type CacheItem struct {
 	value      any
@@ -35,6 +123,8 @@ type CacheItem struct {
 func (c CacheItem) GetValue() any {
 	return c.value
 }
+
+// NewCacheItem creates an item; expiration <= 0 means it never expires.
 func NewCacheItem(value any, expiration time.Duration) CacheItem {
 	return CacheItem{
 		value:      value,
@@ -49,151 +139,108 @@ var (
 )
 
 func NewCleanerCacheInstance() *cleanerCache {
-	if instance == nil {
-		once.Do(func() {
-			instance = &cleanerCache{
-				cache:   &sync.Map{},
-				cleaner: scheduler.StartScheduler(),
-			}
-		})
-	}
+	once.Do(func() {
+		instance = &cleanerCache{entries: newExpiringMap[string, CacheItem]()}
+	})
 	return instance
 }
 func (c *cleanerCache) Close() {
-	defer c.cleaner.Stop()
-	defer c.cache.Clear()
+	c.entries.close()
 }
 func (c *cleanerCache) Set(key string, i CacheItem) {
-	c.cache.Store(key, i)
-	var job = scheduler.JobFunction(&cleaner{cache: c.cache, key: key})
-	c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(i.expiration), job)
+	c.entries.store(key, i, i.expiration)
 }
 func (c *cleanerCache) Get(w http.ResponseWriter, key string) (CacheItem, bool) {
-	if item, ok := c.cache.Load(key); ok {
-		var cacheItem CacheItem = item.(CacheItem)
+	entry, ok := c.entries.load(key)
+	if !ok {
 		if w != nil {
-			w.Header().Set("Cache-Status", "HIT")
-
-			var sb strings.Builder
-			sb.WriteString("max-age=")
-			sb.WriteString(strconv.Itoa(int(cacheItem.expiration.Seconds())))
-			w.Header().Set("Cache-Control", sb.String())
-
-			sb.Reset()
-			sb.WriteString(strconv.Itoa(int(time.Since(cacheItem.generated).Seconds())))
-			w.Header().Set("Age", sb.String())
+			w.Header().Set("Cache-Status", "MISS")
 		}
-
-		return cacheItem, true
+		return CacheItem{}, false
 	}
+	cacheItem := entry.value
 	if w != nil {
-		w.Header().Set("Cache-Status", "MISS")
+		w.Header().Set("Cache-Status", "HIT")
+		// private: entries may be keyed on Authorization, so shared caches
+		// must never store them.
+		cacheControl := "private"
+		if cacheItem.expiration > 0 {
+			cacheControl += ", max-age=" + strconv.Itoa(int(cacheItem.expiration.Seconds()))
+		}
+		w.Header().Set("Cache-Control", cacheControl)
+		w.Header().Set("Age", strconv.Itoa(int(time.Since(cacheItem.generated).Seconds())))
+		w.Header().Add("Vary", "Accept, Accept-Language, Authorization")
 	}
-
-	return CacheItem{}, false
+	return cacheItem, true
 }
+
+// GenerateCacheKey builds a key from the method, path, every query value
+// (escaped and sorted) and the Accept, Accept-Language and Authorization
+// headers. The Authorization value is hashed so tokens are never kept in memory
+// as cache keys.
 func GenerateCacheKey(r *http.Request) string {
 	var sb strings.Builder
 
 	sb.WriteString(r.Method)
-	sb.WriteString(":")
-	sb.WriteString(r.URL.Path)
+	sb.WriteString(" ")
+	sb.WriteString(url.PathEscape(r.URL.Path))
 
-	if len(r.URL.Query()) > 0 {
-		params := make([]string, 0, len(r.URL.Query()))
-		for k := range r.URL.Query() {
-			params = append(params, k+"="+r.URL.Query().Get(k))
-		}
-		sort.Strings(params)
+	if query := r.URL.Query(); len(query) > 0 {
 		sb.WriteString("?")
-		sb.WriteString(strings.Join(params, "&"))
+		sb.WriteString(query.Encode())
 	}
 
-	var relevantHeaders []string = []string{"Accept", "Accept-Language", "Authorization"}
-	for _, header := range relevantHeaders {
-		if value := r.Header.Get(header); value != "" {
-			sb.WriteString("#")
-			sb.WriteString(header)
-			sb.WriteString("=")
-			sb.WriteString(value)
+	for _, header := range []string{"Accept", "Accept-Language", "Authorization"} {
+		value := r.Header.Get(header)
+		if value == "" {
+			continue
 		}
+		if header == "Authorization" {
+			sum := sha256.Sum256([]byte(value))
+			value = hex.EncodeToString(sum[:])
+		}
+		sb.WriteString("#")
+		sb.WriteString(header)
+		sb.WriteString("=")
+		sb.WriteString(url.QueryEscape(value))
 	}
 
 	return sb.String()
 }
 
+func registryKey[T any](cacheType string) string {
+	return cacheType + "|" + reflect.TypeFor[T]().String()
+}
+
 // UUID-based cache implementation with parametrized types
-
-type uuidCleaner struct {
-	key   uuid.UUID
-	cache *sync.Map
-}
-
-func (c *uuidCleaner) Execute() []any {
-	c.cache.Delete(c.key)
-	return nil
-}
-
-// uuidCacheItem es privado - implementación interna
-type uuidCacheItem[T any] struct {
-	value      T
-	expiration time.Duration
-	generated  time.Time
-}
-
-func (c uuidCacheItem[T]) getValue() T {
-	return c.value
-}
-
-func newUUIDCacheItem[T any](value T, expiration time.Duration) uuidCacheItem[T] {
-	return uuidCacheItem[T]{
-		value:      value,
-		expiration: expiration,
-		generated:  time.Now(),
-	}
-}
 
 // UUIDCache es la estructura principal - solo algunos métodos serán públicos
 type uuidCache[T any] struct {
-	cache      *sync.Map
-	cleaner    *scheduler.Scheduler
+	entries    *expiringMap[uuid.UUID, T]
 	defaultTTL time.Duration
 	ttlMutex   sync.RWMutex
 }
 
 func newUUIDCache[T any]() *uuidCache[T] {
 	return &uuidCache[T]{
-		cache:      &sync.Map{},
-		cleaner:    scheduler.StartScheduler(),
+		entries:    newExpiringMap[uuid.UUID, T](),
 		defaultTTL: 0, // No default expiration
 	}
 }
 
+// Close stops the cache's cleaner and drops every entry.
 func (c *uuidCache[T]) Close() {
-	defer c.cleaner.Stop()
-	defer c.cache.Clear()
+	c.entries.close()
 }
 
-func (c *uuidCache[T]) set(key uuid.UUID, item uuidCacheItem[T]) {
-	c.cache.Store(key, item)
-	var job = scheduler.JobFunction(&uuidCleaner{cache: c.cache, key: key})
-	c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(item.expiration), job)
-}
-
-// Store - Método público para almacenar un valor con clave específica
+// Store - Método público para almacenar un valor con clave específica (expiration <= 0: sin expiración)
 func (c *uuidCache[T]) Store(key uuid.UUID, value T, expiration time.Duration) {
-	item := newUUIDCacheItem(value, expiration)
-	c.set(key, item)
+	c.entries.store(key, value, expiration)
 }
 
 // StoreWithDefaultTTL - Método público para almacenar un valor usando el TTL predefinido
 func (c *uuidCache[T]) StoreWithDefaultTTL(key uuid.UUID, value T) {
-	c.ttlMutex.RLock()
-	ttl := c.defaultTTL
-	c.ttlMutex.RUnlock()
-
-	item := newUUIDCacheItem(value, ttl)
-	c.set(key, item)
+	c.entries.store(key, value, c.GetDefaultTTL())
 }
 
 // SetDefaultTTL - Establecer tiempo de expiración predefinido para todos los elementos nuevos
@@ -213,8 +260,7 @@ func (c *uuidCache[T]) GetDefaultTTL() time.Duration {
 // StoreWithNewKey - Método público para almacenar un valor generando una nueva clave UUID
 func (c *uuidCache[T]) StoreWithNewKey(value T, expiration time.Duration) uuid.UUID {
 	key := uuid.New()
-	item := newUUIDCacheItem(value, expiration)
-	c.set(key, item)
+	c.Store(key, value, expiration)
 	return key
 }
 
@@ -225,18 +271,10 @@ func (c *uuidCache[T]) StoreWithNewKeyAndDefaultTTL(value T) uuid.UUID {
 	return key
 }
 
-func (c *uuidCache[T]) get(key uuid.UUID) (uuidCacheItem[T], bool) {
-	if item, ok := c.cache.Load(key); ok {
-		var cacheItem uuidCacheItem[T] = item.(uuidCacheItem[T])
-		return cacheItem, true
-	}
-	return uuidCacheItem[T]{}, false
-}
-
 // Load - Método público para obtener un valor del cache
 func (c *uuidCache[T]) Load(key uuid.UUID) (T, bool) {
-	if item, ok := c.get(key); ok {
-		return item.getValue(), true
+	if entry, ok := c.entries.load(key); ok {
+		return entry.value, true
 	}
 	var zero T
 	return zero, false
@@ -244,29 +282,27 @@ func (c *uuidCache[T]) Load(key uuid.UUID) (T, bool) {
 
 // Delete - Método público para eliminar una entrada del cache
 func (c *uuidCache[T]) Delete(key uuid.UUID) {
-	c.cache.Delete(key)
+	c.entries.delete(key)
 }
 
 // Has - Método público para verificar si existe una clave
 func (c *uuidCache[T]) Has(key uuid.UUID) bool {
-	_, ok := c.cache.Load(key)
+	_, ok := c.entries.load(key)
 	return ok
 }
 
 // Range - Método público para iterar sobre todas las entradas del cache
 func (c *uuidCache[T]) Range(fn func(key uuid.UUID, value T) bool) {
-	c.cache.Range(func(k, v interface{}) bool {
-		key := k.(uuid.UUID)
-		item := v.(uuidCacheItem[T])
-		return fn(key, item.getValue())
+	c.entries.rangeLive(func(key uuid.UUID, entry *expiringEntry[T]) bool {
+		return fn(key, entry.value)
 	})
 }
 
 // Keys - Método público para obtener todas las claves
 func (c *uuidCache[T]) Keys() []uuid.UUID {
 	var keys []uuid.UUID
-	c.cache.Range(func(k, v interface{}) bool {
-		keys = append(keys, k.(uuid.UUID))
+	c.Range(func(key uuid.UUID, _ T) bool {
+		keys = append(keys, key)
 		return true
 	})
 	return keys
@@ -275,9 +311,8 @@ func (c *uuidCache[T]) Keys() []uuid.UUID {
 // Values - Método público para obtener todos los valores
 func (c *uuidCache[T]) Values() []T {
 	var values []T
-	c.cache.Range(func(k, v interface{}) bool {
-		item := v.(uuidCacheItem[T])
-		values = append(values, item.getValue())
+	c.Range(func(_ uuid.UUID, value T) bool {
+		values = append(values, value)
 		return true
 	})
 	return values
@@ -286,10 +321,8 @@ func (c *uuidCache[T]) Values() []T {
 // GetAll - Método público para obtener un mapa regular (copia) para range tradicional
 func (c *uuidCache[T]) GetAll() map[uuid.UUID]T {
 	result := make(map[uuid.UUID]T)
-	c.cache.Range(func(k, v interface{}) bool {
-		key := k.(uuid.UUID)
-		item := v.(uuidCacheItem[T])
-		result[key] = item.getValue()
+	c.Range(func(key uuid.UUID, value T) bool {
+		result[key] = value
 		return true
 	})
 	return result
@@ -298,7 +331,7 @@ func (c *uuidCache[T]) GetAll() map[uuid.UUID]T {
 // Len - Método público para obtener el número de elementos en el cache
 func (c *uuidCache[T]) Len() int {
 	count := 0
-	c.cache.Range(func(k, v interface{}) bool {
+	c.Range(func(uuid.UUID, T) bool {
 		count++
 		return true
 	})
@@ -307,13 +340,13 @@ func (c *uuidCache[T]) Len() int {
 
 // Clear - Método público para limpiar completamente el cache
 func (c *uuidCache[T]) Clear() {
-	c.cache.Clear()
+	c.entries.clear()
 }
 
 // Generic UUID cache instance management - privado
 var (
 	uuidCacheInstances = make(map[string]any)
-	uuidCacheMutex     sync.RWMutex
+	uuidCacheMutex     sync.Mutex
 )
 
 // UUIDCache - Interfaz pública que expone solo los métodos necesarios
@@ -336,6 +369,7 @@ type UUIDCache[T any] interface {
 	GetDefaultTTL() time.Duration
 	// Control de limpieza
 	Clear()
+	Close()
 }
 
 // NewUUIDCache - Función pública para crear una nueva instancia de cache
@@ -343,100 +377,50 @@ func NewUUIDCache[T any]() UUIDCache[T] {
 	return newUUIDCache[T]()
 }
 
-// GetUUIDCacheInstance - Función pública para obtener una instancia singleton
+// GetUUIDCacheInstance - Función pública para obtener una instancia singleton.
+// Instances are keyed by cacheType and T, so the same name with different
+// value types yields separate caches.
 func GetUUIDCacheInstance[T any](cacheType string) UUIDCache[T] {
-	uuidCacheMutex.RLock()
-	if instance, ok := uuidCacheInstances[cacheType]; ok {
-		uuidCacheMutex.RUnlock()
-		return instance.(*uuidCache[T])
-	}
-	uuidCacheMutex.RUnlock()
-
+	key := registryKey[T](cacheType)
 	uuidCacheMutex.Lock()
 	defer uuidCacheMutex.Unlock()
-
-	// Double check after acquiring write lock
-	if instance, ok := uuidCacheInstances[cacheType]; ok {
+	if instance, ok := uuidCacheInstances[key]; ok {
 		return instance.(*uuidCache[T])
 	}
-
 	newCache := newUUIDCache[T]()
-	uuidCacheInstances[cacheType] = newCache
+	uuidCacheInstances[key] = newCache
 	return newCache
 }
 
 // String-based cache implementation with parametrized types
 
-type stringCleaner struct {
-	key   string
-	cache *sync.Map
-}
-
-func (c *stringCleaner) Execute() []any {
-	c.cache.Delete(c.key)
-	return nil
-}
-
-// stringCacheItem es privado - implementación interna
-type stringCacheItem[T any] struct {
-	value      T
-	expiration time.Duration
-	generated  time.Time
-}
-
-func (c stringCacheItem[T]) getValue() T {
-	return c.value
-}
-
-func newStringCacheItem[T any](value T, expiration time.Duration) stringCacheItem[T] {
-	return stringCacheItem[T]{
-		value:      value,
-		expiration: expiration,
-		generated:  time.Now(),
-	}
-}
-
 // stringCache es la estructura principal - solo algunos métodos serán públicos
 type stringCache[T any] struct {
-	cache      *sync.Map
-	cleaner    *scheduler.Scheduler
+	entries    *expiringMap[string, T]
 	defaultTTL time.Duration
 	ttlMutex   sync.RWMutex
 }
 
 func newStringCache[T any]() *stringCache[T] {
 	return &stringCache[T]{
-		cache:      &sync.Map{},
-		cleaner:    scheduler.StartScheduler(),
+		entries:    newExpiringMap[string, T](),
 		defaultTTL: 0, // No default expiration
 	}
 }
 
+// Close stops the cache's cleaner and drops every entry.
 func (c *stringCache[T]) Close() {
-	defer c.cleaner.Stop()
-	defer c.cache.Clear()
+	c.entries.close()
 }
 
-func (c *stringCache[T]) set(key string, item stringCacheItem[T]) {
-	c.cache.Store(key, item)
-	var job = scheduler.JobFunction(&stringCleaner{cache: c.cache, key: key})
-	c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(item.expiration), job)
-}
-
-// Store - Método público para almacenar un valor con clave específica
+// Store - Método público para almacenar un valor con clave específica (expiration <= 0: sin expiración)
 func (c *stringCache[T]) Store(key string, value T, expiration time.Duration) {
-	item := newStringCacheItem(value, expiration)
-	c.set(key, item)
+	c.entries.store(key, value, expiration)
 }
 
 // StoreWithDefaultTTL - Método público para almacenar un valor usando el TTL predefinido
 func (c *stringCache[T]) StoreWithDefaultTTL(key string, value T) {
-	c.ttlMutex.RLock()
-	ttl := c.defaultTTL
-	c.ttlMutex.RUnlock()
-
-	item := newStringCacheItem(value, ttl)
-	c.set(key, item)
+	c.entries.store(key, value, c.GetDefaultTTL())
 }
 
 // SetDefaultTTL - Establecer tiempo de expiración predefinido para todos los elementos nuevos
@@ -453,18 +437,10 @@ func (c *stringCache[T]) GetDefaultTTL() time.Duration {
 	return c.defaultTTL
 }
 
-func (c *stringCache[T]) get(key string) (stringCacheItem[T], bool) {
-	if item, ok := c.cache.Load(key); ok {
-		var cacheItem stringCacheItem[T] = item.(stringCacheItem[T])
-		return cacheItem, true
-	}
-	return stringCacheItem[T]{}, false
-}
-
 // Load - Método público para obtener un valor del cache
 func (c *stringCache[T]) Load(key string) (T, bool) {
-	if item, ok := c.get(key); ok {
-		return item.getValue(), true
+	if entry, ok := c.entries.load(key); ok {
+		return entry.value, true
 	}
 	var zero T
 	return zero, false
@@ -472,29 +448,27 @@ func (c *stringCache[T]) Load(key string) (T, bool) {
 
 // Delete - Método público para eliminar una entrada del cache
 func (c *stringCache[T]) Delete(key string) {
-	c.cache.Delete(key)
+	c.entries.delete(key)
 }
 
 // Has - Método público para verificar si existe una clave
 func (c *stringCache[T]) Has(key string) bool {
-	_, ok := c.cache.Load(key)
+	_, ok := c.entries.load(key)
 	return ok
 }
 
 // Range - Método público para iterar sobre todas las entradas del cache
 func (c *stringCache[T]) Range(fn func(key string, value T) bool) {
-	c.cache.Range(func(k, v interface{}) bool {
-		key := k.(string)
-		item := v.(stringCacheItem[T])
-		return fn(key, item.getValue())
+	c.entries.rangeLive(func(key string, entry *expiringEntry[T]) bool {
+		return fn(key, entry.value)
 	})
 }
 
 // Keys - Método público para obtener todas las claves
 func (c *stringCache[T]) Keys() []string {
 	var keys []string
-	c.cache.Range(func(k, v interface{}) bool {
-		keys = append(keys, k.(string))
+	c.Range(func(key string, _ T) bool {
+		keys = append(keys, key)
 		return true
 	})
 	return keys
@@ -503,9 +477,8 @@ func (c *stringCache[T]) Keys() []string {
 // Values - Método público para obtener todos los valores
 func (c *stringCache[T]) Values() []T {
 	var values []T
-	c.cache.Range(func(k, v interface{}) bool {
-		item := v.(stringCacheItem[T])
-		values = append(values, item.getValue())
+	c.Range(func(_ string, value T) bool {
+		values = append(values, value)
 		return true
 	})
 	return values
@@ -514,10 +487,8 @@ func (c *stringCache[T]) Values() []T {
 // GetAll - Método público para obtener un mapa regular (copia) para range tradicional
 func (c *stringCache[T]) GetAll() map[string]T {
 	result := make(map[string]T)
-	c.cache.Range(func(k, v interface{}) bool {
-		key := k.(string)
-		item := v.(stringCacheItem[T])
-		result[key] = item.getValue()
+	c.Range(func(key string, value T) bool {
+		result[key] = value
 		return true
 	})
 	return result
@@ -526,7 +497,7 @@ func (c *stringCache[T]) GetAll() map[string]T {
 // Len - Método público para obtener el número de elementos en el cache
 func (c *stringCache[T]) Len() int {
 	count := 0
-	c.cache.Range(func(k, v interface{}) bool {
+	c.Range(func(string, T) bool {
 		count++
 		return true
 	})
@@ -535,13 +506,13 @@ func (c *stringCache[T]) Len() int {
 
 // Clear - Método público para limpiar completamente el cache
 func (c *stringCache[T]) Clear() {
-	c.cache.Clear()
+	c.entries.clear()
 }
 
 // Generic string cache instance management - privado
 var (
 	stringCacheInstances = make(map[string]any)
-	stringCacheMutex     sync.RWMutex
+	stringCacheMutex     sync.Mutex
 )
 
 // StringCache - Interfaz pública que expone solo los métodos necesarios
@@ -562,6 +533,7 @@ type StringCache[T any] interface {
 	GetDefaultTTL() time.Duration
 	// Control de limpieza
 	Clear()
+	Close()
 }
 
 // NewStringCache - Función pública para crear una nueva instancia de cache de strings
@@ -569,45 +541,29 @@ func NewStringCache[T any]() StringCache[T] {
 	return newStringCache[T]()
 }
 
-// GetStringCacheInstance - Función pública para obtener una instancia singleton de cache de strings
+// GetStringCacheInstance - Función pública para obtener una instancia singleton de cache de strings.
+// Instances are keyed by cacheType and T.
 func GetStringCacheInstance[T any](cacheType string) StringCache[T] {
-	stringCacheMutex.RLock()
-	if instance, ok := stringCacheInstances[cacheType]; ok {
-		stringCacheMutex.RUnlock()
-		return instance.(*stringCache[T])
-	}
-	stringCacheMutex.RUnlock()
-
+	key := registryKey[T](cacheType)
 	stringCacheMutex.Lock()
 	defer stringCacheMutex.Unlock()
-
-	// Double check after acquiring write lock
-	if instance, ok := stringCacheInstances[cacheType]; ok {
+	if instance, ok := stringCacheInstances[key]; ok {
 		return instance.(*stringCache[T])
 	}
-
 	newCache := newStringCache[T]()
-	stringCacheInstances[cacheType] = newCache
+	stringCacheInstances[key] = newCache
 	return newCache
 }
 
-// List-based cache implementation with automatic list expiration
-
-// listCacheCleaner es para limpiar toda la lista cuando expire
-type listCacheCleaner[T any] struct {
-	cache *listCache[T]
-}
-
-func (c *listCacheCleaner[T]) Execute() []any {
-	c.cache.Clear()
-	return nil
-}
+// List-based cache implementation with automatic list expiration.
+// Expiry is lazy: the whole list is treated as empty once its TTL has passed
+// and is reset on the next write. No background job is used, so changing the
+// TTL can never wipe items added afterwards.
 
 // listCache es la implementación privada - toda la lista expira junta
 type listCache[T any] struct {
 	items     []T
 	mutex     sync.RWMutex
-	cleaner   *scheduler.Scheduler
 	createdAt time.Time
 	ttl       time.Duration
 }
@@ -615,25 +571,19 @@ type listCache[T any] struct {
 func newListCache[T any]() *listCache[T] {
 	return &listCache[T]{
 		items:     make([]T, 0),
-		cleaner:   scheduler.StartScheduler(),
 		createdAt: time.Now(),
 		ttl:       0, // Sin expiración por defecto
 	}
 }
 
-// SetTTL - Establecer tiempo de vida para toda la lista
+// SetTTL - Establecer tiempo de vida para toda la lista (reinicia su edad)
 func (c *listCache[T]) SetTTL(duration time.Duration) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	c.resetIfExpired()
 	c.ttl = duration
 	c.createdAt = time.Now()
-
-	if duration > 0 {
-		// Programar limpieza automática
-		job := scheduler.JobFunction(&listCacheCleaner[T]{cache: c})
-		c.cleaner.ScheduleProgrammedOneTimeJob(time.Now().Add(duration), job)
-	}
 }
 
 // isExpired - Verificar si toda la lista ha expirado
@@ -644,16 +594,21 @@ func (c *listCache[T]) isExpired() bool {
 	return time.Since(c.createdAt) > c.ttl
 }
 
+// resetIfExpired drops expired items; callers must hold the write lock.
+func (c *listCache[T]) resetIfExpired() {
+	if c.isExpired() {
+		clear(c.items)
+		c.items = c.items[:0]
+		c.createdAt = time.Now()
+	}
+}
+
 // Add - Agregar un elemento al final de la lista
 func (c *listCache[T]) Add(value T) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.isExpired() {
-		c.items = c.items[:0]    // Limpiar si está expirada
-		c.createdAt = time.Now() // Resetear tiempo
-	}
-
+	c.resetIfExpired()
 	c.items = append(c.items, value)
 }
 
@@ -662,11 +617,7 @@ func (c *listCache[T]) AddFirst(value T) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.isExpired() {
-		c.items = c.items[:0]    // Limpiar si está expirada
-		c.createdAt = time.Now() // Resetear tiempo
-	}
-
+	c.resetIfExpired()
 	c.items = append([]T{value}, c.items...)
 }
 
@@ -732,16 +683,9 @@ func (c *listCache[T]) GetAllWithIndex() map[int]T {
 	return result
 }
 
-// Range - Iterar sobre todos los elementos
+// Range - Iterar sobre todos los elementos (sobre una copia, fn puede modificar la lista)
 func (c *listCache[T]) Range(fn func(index int, value T) bool) {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	if c.isExpired() {
-		return
-	}
-
-	for i, item := range c.items {
+	for i, item := range c.GetAll() {
 		if !fn(i, item) {
 			break
 		}
@@ -784,6 +728,7 @@ func (c *listCache[T]) Clear() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	clear(c.items)
 	c.items = c.items[:0]
 	c.createdAt = time.Now()
 }
@@ -882,27 +827,19 @@ func NewListCache[T any]() ListCache[T] {
 // Generic list cache instance management - privado
 var (
 	listCacheInstances = make(map[string]any)
-	listCacheMutex     sync.RWMutex
+	listCacheMutex     sync.Mutex
 )
 
-// GetListCacheInstance - Función pública para obtener una instancia singleton de cache de lista
+// GetListCacheInstance - Función pública para obtener una instancia singleton de cache de lista.
+// Instances are keyed by cacheType and T.
 func GetListCacheInstance[T any](cacheType string) ListCache[T] {
-	listCacheMutex.RLock()
-	if instance, ok := listCacheInstances[cacheType]; ok {
-		listCacheMutex.RUnlock()
-		return instance.(*listCache[T])
-	}
-	listCacheMutex.RUnlock()
-
+	key := registryKey[T](cacheType)
 	listCacheMutex.Lock()
 	defer listCacheMutex.Unlock()
-
-	// Double check after acquiring write lock
-	if instance, ok := listCacheInstances[cacheType]; ok {
+	if instance, ok := listCacheInstances[key]; ok {
 		return instance.(*listCache[T])
 	}
-
 	newCache := newListCache[T]()
-	listCacheInstances[cacheType] = newCache
+	listCacheInstances[key] = newCache
 	return newCache
 }
