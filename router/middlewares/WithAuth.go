@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -15,6 +16,8 @@ type authMiddlewareOptions struct {
 	timeoutSet bool
 }
 
+// WithTimeout sets a deadline on the request context for authentication and
+// the handler. Handlers must observe r.Context() for it to have any effect.
 func WithTimeout(timeout time.Duration) authMiddlewareOption {
 	return func(options *authMiddlewareOptions) {
 		options.timeout = timeout
@@ -22,7 +25,12 @@ func WithTimeout(timeout time.Duration) authMiddlewareOption {
 	}
 }
 
+// WithAuthMiddleware panics if auth is nil: a missing authenticator must never
+// silently disable authentication.
 func WithAuthMiddleware(auth auth.PlainAuthInterface, hf http.HandlerFunc, opts ...authMiddlewareOption) http.HandlerFunc {
+	if auth == nil {
+		panic("middlewares: WithAuthMiddleware requires a non-nil auth")
+	}
 	return authMiddlewareFunc(auth, buildAuthMiddlewareOptions(opts...))(hf)
 }
 
@@ -32,65 +40,68 @@ func authMiddlewareFunc(auth auth.PlainAuthInterface, options authMiddlewareOpti
 			r, cancel := withOptionalTimeout(r, options)
 			defer cancel()
 
-			if auth == nil {
-				hf(w, r)
-				return
-			}
-			if authorize, err := auth.Authorize(r); !authorize || err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
-				return
-
-			}
-			user, err := auth.GetUser(r)
-
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
+			user, ok := authenticate(w, r, auth)
+			if !ok {
 				return
 			}
 			ctx := context.WithValue(r.Context(), auth.GetContextKey(), user)
-			r = r.WithContext(ctx)
-			hf(w, r)
+			hf(w, r.WithContext(ctx))
 		}
 	}
 }
 
+// WithAuthAndRBAC panics if authType is nil.
 func WithAuthAndRBAC(authType auth.RBACAuthInterface, roles []string, hf http.HandlerFunc, opts ...authMiddlewareOption) http.HandlerFunc {
+	if authType == nil {
+		panic("middlewares: WithAuthAndRBAC requires a non-nil auth")
+	}
 	options := buildAuthMiddlewareOptions(opts...)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		r, cancel := withOptionalTimeout(r, options)
 		defer cancel()
 
-		if authorize, err := authType.Authorize(r); !authorize || err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
+		user, ok := authenticate(w, r, authType)
+		if !ok {
 			return
 		}
-
-		user, err := authType.GetUser(r)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error": "Unauthorized: ` + err.Error() + `"}`))
+		if !authType.RBAC(user, roles) {
+			writeJSONError(w, http.StatusForbidden, "Forbidden: You don't have the required role")
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), authType.GetContextKey(), user)
-		r = r.WithContext(ctx)
-		if !authType.RBAC(roles) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"error": "Forbidden: You don't have the required role"}`))
-			return
-		}
-
-		hf(w, r)
+		hf(w, r.WithContext(ctx))
 	}
+}
+
+func authenticate(w http.ResponseWriter, r *http.Request, a auth.PlainAuthInterface) (any, bool) {
+	if authorized, err := a.Authorize(r); !authorized || err != nil {
+		writeJSONError(w, http.StatusUnauthorized, unauthorizedMessage(err))
+		return nil, false
+	}
+	user, err := a.GetUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, unauthorizedMessage(err))
+		return nil, false
+	}
+	return user, true
+}
+
+// unauthorizedMessage only exposes the library's own sentinel errors; anything
+// else (custom implementations, parser internals) becomes a generic message.
+func unauthorizedMessage(err error) string {
+	for _, known := range []error{
+		auth.ErrAuthorizationHeaderMissing,
+		auth.ErrBearerTokenMalformed,
+		auth.ErrTokenInvalid,
+		auth.ErrTokenExpired,
+	} {
+		if errors.Is(err, known) {
+			return "Unauthorized: " + known.Error()
+		}
+	}
+	return "Unauthorized"
 }
 
 func buildAuthMiddlewareOptions(opts ...authMiddlewareOption) authMiddlewareOptions {

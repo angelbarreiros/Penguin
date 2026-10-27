@@ -3,6 +3,7 @@ package scheduler
 import (
 	"container/heap"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,7 +20,7 @@ const (
 )
 
 type jobStatus struct {
-	state       int16 // "running" : 1 , "paused" 0: "failed" : -1
+	state       int16 // 1: scheduled, 0: paused
 	nextRunTime time.Time
 }
 
@@ -43,10 +44,15 @@ type JobFuncInterface interface {
 	Execute() []any
 }
 
+// jobFunction may be scheduled only once. Sending results and closing the
+// return channel are serialised by mu so a job that is still running when it
+// is removed (or the scheduler stops) never sends on a closed channel.
 type jobFunction struct {
 	function      JobFuncInterface
 	returnChannel chan []any
-	closeOnce     sync.Once
+	mu            sync.Mutex
+	closed        bool
+	scheduled     atomic.Bool
 }
 
 // JobOptions configures optional behaviour for any scheduled job.
@@ -69,6 +75,7 @@ type job struct {
 	timeOfDay         time.Duration
 	nextRun           time.Time
 	heapIndex         int
+	running           bool // waitForCompletion run in flight; reschedule pending
 	jobFunction       *jobFunction
 	jobStatus         jobStatus
 	runImmediately    bool
@@ -130,6 +137,9 @@ var schedulerInstance *Scheduler
 var schedulerInstanceMux sync.Mutex
 var jobCounter uint64
 
+// StartScheduler returns the process-wide shared scheduler, creating it if
+// needed. Stopping it affects every user; components that need their own
+// lifecycle should use NewScheduler.
 func StartScheduler() *Scheduler {
 	schedulerInstanceMux.Lock()
 	defer schedulerInstanceMux.Unlock()
@@ -141,14 +151,31 @@ func StartScheduler() *Scheduler {
 	return schedulerInstance
 }
 
+// NewScheduler starts an independent scheduler owned by the caller.
+func NewScheduler() *Scheduler {
+	return newScheduler()
+}
+
+func claimJobFunction(jobFunction *jobFunction) error {
+	if jobFunction == nil || jobFunction.function == nil {
+		return fmt.Errorf("job function cannot be nil")
+	}
+	if !jobFunction.scheduled.CompareAndSwap(false, true) {
+		return fmt.Errorf("job function is already scheduled; create a new one with JobFunction")
+	}
+	return nil
+}
+
 func JobFunction(f JobFuncInterface) *jobFunction {
 	return &jobFunction{function: f}
 }
 
 func (j *jobFunction) WithReturnChannel() (*jobFunction, chan []any) {
-	returnChannel := make(chan []any, 1)
-	j.returnChannel = returnChannel
-	j.closeOnce = sync.Once{}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.returnChannel == nil {
+		j.returnChannel = make(chan []any, 1)
+	}
 	return j, j.returnChannel
 }
 
@@ -161,8 +188,8 @@ func (s *Scheduler) ScheduleProgrammedOneTimeJob(when time.Time, jobFunction *jo
 	if !opt.RunImmediately && !when.After(time.Now()) {
 		return 0, fmt.Errorf("job time must be in the future")
 	}
-	if jobFunction == nil || jobFunction.function == nil {
-		return 0, fmt.Errorf("job function cannot be nil")
+	if err := claimJobFunction(jobFunction); err != nil {
+		return 0, err
 	}
 
 	if opt.RunImmediately {
@@ -203,8 +230,8 @@ func (s *Scheduler) ScheduleIntervalJob(interval time.Duration, jobFunction *job
 	if interval <= 0 {
 		return 0, fmt.Errorf("interval must be greater than zero")
 	}
-	if jobFunction == nil || jobFunction.function == nil {
-		return 0, fmt.Errorf("job function cannot be nil")
+	if err := claimJobFunction(jobFunction); err != nil {
+		return 0, err
 	}
 
 	var opt JobOptions
@@ -246,8 +273,8 @@ func (s *Scheduler) ScheduleProgrammedIntervalJob(everyXDays int, at time.Time, 
 	if everyXDays <= 0 {
 		return 0, fmt.Errorf("days must be greater than zero")
 	}
-	if jobFunction == nil || jobFunction.function == nil {
-		return 0, fmt.Errorf("job function cannot be nil")
+	if err := claimJobFunction(jobFunction); err != nil {
+		return 0, err
 	}
 
 	var opt JobOptions
@@ -534,7 +561,11 @@ func (s *Scheduler) handleCommand(cmd schedulerCommand) bool {
 
 	case cmdRescheduleJob:
 		j, exists := s.jobs[cmd.id]
-		if !exists || j.jobStatus.state == 0 {
+		if !exists {
+			break
+		}
+		j.running = false
+		if j.jobStatus.state == 0 || j.heapIndex >= 0 {
 			break
 		}
 		now := time.Now()
@@ -609,6 +640,7 @@ func (s *Scheduler) executeDueJobs() {
 		if storedJob.waitForCompletion && storedJob.mode != jobModeOneTime {
 			// Run in goroutine; reschedule only after execution finishes.
 			jobRef := storedJob
+			jobRef.running = true
 			go func() {
 				jobRef.jobFunction.executeJob(false)
 				// Ignore error: if scheduler stopped, command will be dropped.
@@ -655,30 +687,47 @@ func (s *Scheduler) removeById(id uint64) error {
 }
 
 func (j *jobFunction) executeJob(closeAfter bool) {
-	results := j.function.Execute()
-
-	if j.returnChannel != nil {
-		if len(results) > 0 {
-			select {
-			case j.returnChannel <- results:
-			default:
-			}
-		}
-
+	defer func() {
 		if closeAfter {
 			j.closeReturnChannel()
+		}
+	}()
+
+	results, ok := j.run()
+	if !ok {
+		return
+	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.returnChannel != nil && !j.closed && len(results) > 0 {
+		select {
+		case j.returnChannel <- results:
+		default:
 		}
 	}
 }
 
+// run executes the job, recovering panics so one failing job cannot crash the
+// process.
+func (j *jobFunction) run() (results []any, ok bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			logger.GetConsoleLogger().Error("Scheduled job panicked: %v\nStack: %s", p, debug.Stack())
+			ok = false
+		}
+	}()
+	return j.function.Execute(), true
+}
+
 func (j *jobFunction) closeReturnChannel() {
-	if j.returnChannel == nil {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.returnChannel == nil || j.closed {
 		return
 	}
-
-	j.closeOnce.Do(func() {
-		close(j.returnChannel)
-	})
+	j.closed = true
+	close(j.returnChannel)
 }
 
 func (s *Scheduler) pauseById(id uint64) error {
@@ -710,6 +759,10 @@ func (s *Scheduler) unPauseById(id uint64) error {
 	}
 
 	j.jobStatus.state = 1
+	if j.running {
+		// The in-flight run will reschedule the job when it finishes.
+		return nil
+	}
 	if j.nextRun.Before(time.Now()) {
 		j.nextRun = time.Now()
 	}

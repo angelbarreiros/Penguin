@@ -1,3 +1,5 @@
+.PHONY: test vet benchmark cleanOutputs cleanLogs compilerInfo info
+
 benchmarkDir := ./tests/benchmarks
 benchmarkFunctions := .
 timestamp := $(shell date +%Y-%m-%d_%H-%M-%S)
@@ -6,12 +8,17 @@ tempDir := ./tests/output
 benchmarkOutFile := $(outputDir)$(timestamp)_benchmark_results.csv
 tempFile := $(tempDir)/benchmark_raw.tmp
 defaultBenchmark := go test -benchmem -bench=. ./tests/benchmarks 
-allocsDir := ./services
+allocsDir := ./...
 logDir := ./logs/
-mainFile := ./main.go
-$(shell mkdir -p $(outputDir) )
+
+test:
+	go test -race ./...
+
+vet:
+	go vet ./...
 
 benchmark:
+	@mkdir -p $(outputDir)
 	@echo "Running benchmarks..."
 	@echo "Saving formatted results to $(benchmarkOutFile)"
 	@echo "----------------------------------------"
@@ -43,13 +50,6 @@ compilerInfo:
 	@echo "----------------------------------------"
 	@echo "Allocations info displayed."
 
-run: 
-	@echo "Running application..."
-	@echo "----------------------------------------"
-	go run $(mainFile); 	
-	@echo "----------------------------------------"
-	@echo "Application run ended."
-
 info:
 	@echo " ----------------------------------------"
 	@echo " Makefile Targets and Variables"
@@ -71,11 +71,10 @@ info:
 	@echo ""
 	@echo " compilerInfo: Show memory allocation information"
 	@echo "   Variables:"
-	@echo "     allocsDir=$(allocsDir) - Directory containing services to analyze"
+	@echo "     allocsDir=$(allocsDir) - Packages to analyze"
 	@echo ""
-	@echo " run: Run the main application"
-	@echo "   Variables:"
-	@echo "     mainFile=$(mainFile) - Main Go file to execute"
+	@echo " test: Run all tests with the race detector"
+	@echo " vet: Run go vet"
 	@echo ""
 	@echo " Global Variables:"
 	@echo "   timestamp=$(timestamp) - Timestamp used for output files"

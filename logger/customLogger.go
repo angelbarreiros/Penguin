@@ -84,6 +84,7 @@ type FileLogger struct {
 	baseFileName  string
 	maxFileSizeMB int
 	maxAgeDays    int
+	rotations     int
 }
 
 var fileLoggerInstance *FileLogger
@@ -108,7 +109,7 @@ func GetFileLogger() *FileLogger {
 			maxAgeDays:    30,
 		}
 
-		if err := os.MkdirAll(fileLoggerInstance.logDir, 0755); err != nil {
+		if err := os.MkdirAll(fileLoggerInstance.logDir, 0750); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
 		}
 
@@ -121,7 +122,7 @@ func GetConsoleLogger() *ConsoleLogger {
 	consoleLoggerOnce.Do(func() {
 		consoleLoggerInstance = &ConsoleLogger{
 			level:   INFO,
-			colored: true,
+			colored: isTerminal(os.Stdout),
 		}
 	})
 	return consoleLoggerInstance
@@ -157,7 +158,7 @@ func (l *FileLogger) Configure(logDir string, baseFileName string, maxFileSizeMB
 			l.file = nil
 		}
 
-		if err := os.MkdirAll(l.logDir, 0755); err != nil {
+		if err := os.MkdirAll(l.logDir, 0750); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
 		}
 
@@ -214,7 +215,19 @@ func (l *FileLogger) Error(msg string, args ...any) {
 func (l *FileLogger) Fatal(msg string, args ...any) {
 	_, file, line, _ := runtime.Caller(1)
 	l.logWithCaller(FATAL, file, line, msg, args...)
+	l.Close()
 	os.Exit(1)
+}
+
+// Close flushes and closes the current log file.
+func (l *FileLogger) Close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file != nil {
+		l.file.Sync()
+		l.file.Close()
+		l.file = nil
+	}
 }
 
 // Debug logs a debug message to console
@@ -345,7 +358,7 @@ func (l *FileLogger) openLogFile() {
 		l.file = nil
 	}
 	logPath := filepath.Join(l.logDir, l.baseFileName)
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
 		return
@@ -363,12 +376,19 @@ func (l *FileLogger) rotateLog() {
 	l.file = nil
 
 	var currentPath string = filepath.Join(l.logDir, l.baseFileName)
-	var timestamp string = time.Now().Format("20060102-150405")
-	var newPath string = filepath.Join(l.logDir, fmt.Sprintf("%s.%s", l.baseFileName, timestamp))
+	// Nanosecond precision plus a counter keeps rotated names unique even when
+	// several rotations happen within one second.
+	l.rotations++
+	var timestamp string = time.Now().Format("20060102-150405.000000000")
+	var newPath string = filepath.Join(l.logDir, fmt.Sprintf("%s.%s-%d", l.baseFileName, timestamp, l.rotations))
 
 	if err := os.Rename(currentPath, newPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to rotate log file: %v\n", err)
+		l.openLogFile()
+		return
 	}
+
+	pruneOldLogs(l.logDir, l.baseFileName, l.maxAgeDays)
 
 	go func(filePath string) {
 		compressedPath := filePath + ".gz"
@@ -384,6 +404,34 @@ func (l *FileLogger) rotateLog() {
 	l.openLogFile()
 }
 
+// pruneOldLogs removes rotated files of baseFileName older than maxAgeDays.
+func pruneOldLogs(logDir string, baseFileName string, maxAgeDays int) {
+	if maxAgeDays <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, baseFileName+".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		os.Remove(filepath.Join(logDir, name))
+	}
+}
+
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 func compressFile(src, dst string) error {
 
 	sourceFile, err := os.Open(src)
@@ -392,19 +440,16 @@ func compressFile(src, dst string) error {
 	}
 	defer sourceFile.Close()
 
-	destFile, err := os.Create(dst)
+	destFile, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0640)
 	if err != nil {
 		return err
 	}
 	defer destFile.Close()
 
 	var gzipWriter *gzip.Writer = gzip.NewWriter(destFile)
-	defer gzipWriter.Close()
-
-	_, err = io.Copy(gzipWriter, sourceFile)
-	if err != nil {
+	if _, err = io.Copy(gzipWriter, sourceFile); err != nil {
+		gzipWriter.Close()
 		return err
 	}
-
-	return nil
+	return gzipWriter.Close()
 }

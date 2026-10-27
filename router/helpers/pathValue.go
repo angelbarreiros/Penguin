@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	routerErrors "github.com/angelbarreiros/Penguin/router/errors"
 	"github.com/google/uuid"
@@ -62,21 +63,19 @@ func WithCustomLengthOption(length int) MaxStringLengthOption {
 func GetStringPathValue(identifier string, r *http.Request, options ...MaxStringLengthOption) (string, error) {
 	var maxLength int = defaultMaxLength
 	if len(options) > 1 {
-		panic("GetStringQueryValue: more than one option provided")
+		panic("GetStringPathValue: more than one option provided")
 	}
 	if len(options) > 0 {
 		maxLength = options[0]()
 	}
 
+	// The value is returned as-is: use parameterised queries and output
+	// encoding instead of stripping characters here.
 	id := strings.TrimSpace(r.PathValue(identifier))
 	if id == "" {
 		return "", routerErrors.ErrPathVariableMissing(identifier)
 	}
-	id = sanitizeRegex.ReplaceAllString(id, "")
-	if id == "" {
-		return "", routerErrors.ErrPathVariableMissing(identifier)
-	}
-	if len(id) > maxLength {
+	if utf8.RuneCountInString(id) > maxLength {
 		return "", routerErrors.ErrPathVariableTooLong(identifier, maxLength)
 	}
 
@@ -91,7 +90,7 @@ func GetNullUint64PathValue(identifier string, r *http.Request) (sql.NullInt64, 
 	if !numericRegex.MatchString(id) {
 		return sql.NullInt64{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "uint64")
 	}
-	idUint, err := strconv.ParseUint(id, 10, 64)
+	idUint, err := strconv.ParseUint(id, 10, 63)
 	if err != nil {
 		return sql.NullInt64{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "uint64")
 	}
@@ -103,7 +102,7 @@ func GetNullInt64PathValue(identifier string, r *http.Request) (sql.NullInt64, e
 	if id == "" {
 		return sql.NullInt64{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) {
+	if !signedNumericRegex.MatchString(id) {
 		return sql.NullInt64{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "int64")
 	}
 	idInt, err := strconv.ParseInt(id, 10, 64)
@@ -176,10 +175,15 @@ func GetNullBytePathValue(identifier string, r *http.Request) (sql.NullByte, err
 	if id == "" {
 		return sql.NullByte{Valid: false}, nil
 	}
-	if len(id) != 1 {
+	// Same contract as GetNullByteQueryParam: a number between 0 and 255.
+	if !numericRegex.MatchString(id) {
 		return sql.NullByte{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "byte")
 	}
-	return sql.NullByte{Byte: id[0], Valid: true}, nil
+	idByte, err := strconv.ParseUint(id, 10, 8)
+	if err != nil {
+		return sql.NullByte{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "byte")
+	}
+	return sql.NullByte{Byte: byte(idByte), Valid: true}, nil
 }
 
 func GetNullFloat64PathValue(identifier string, r *http.Request) (sql.NullFloat64, error) {
@@ -187,7 +191,7 @@ func GetNullFloat64PathValue(identifier string, r *http.Request) (sql.NullFloat6
 	if id == "" {
 		return sql.NullFloat64{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) {
+	if !floatRegex.MatchString(id) {
 		return sql.NullFloat64{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "float64")
 	}
 	idFloat, err := strconv.ParseFloat(id, 64)
@@ -202,7 +206,7 @@ func GetNullInt16PathValue(identifier string, r *http.Request) (sql.NullInt16, e
 	if id == "" {
 		return sql.NullInt16{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) {
+	if !signedNumericRegex.MatchString(id) {
 		return sql.NullInt16{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "int16")
 	}
 	idInt, err := strconv.ParseInt(id, 10, 16)
@@ -217,7 +221,7 @@ func GetNullInt32PathValue(identifier string, r *http.Request) (sql.NullInt32, e
 	if id == "" {
 		return sql.NullInt32{Valid: false}, nil
 	}
-	if !numericRegex.MatchString(id) {
+	if !signedNumericRegex.MatchString(id) {
 		return sql.NullInt32{Valid: false}, routerErrors.ErrPathVariableWrongType(identifier, "int32")
 	}
 	idInt, err := strconv.ParseInt(id, 10, 32)

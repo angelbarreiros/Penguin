@@ -2,114 +2,81 @@ package auth
 
 import (
 	"crypto/ecdsa"
-	"fmt"
 	"net/http"
-	"strings"
 	"sync"
-	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
-type jwtOptionsFunc func(*JwtAuth)
+type jwtOptionsFunc func(*jwtAuthOptions)
+
+// JwtAuth is safe for concurrent use: it keeps no per-request state.
 type JwtAuth struct {
-	authKey     *ecdsa.PrivateKey
-	claimsType  plainClaimsInterface
-	tokenString string
-	options     *jwtAuthOptions
+	verifier *verifier
+	options  *jwtAuthOptions
 }
 type jwtAuthOptions struct {
 	ContextKey any
+	Issuer     string
+	Audience   string
 }
 
 var jwtAuthInstance *JwtAuth
 var jwtOnce sync.Once
 
 func NewJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
-	return initJwtAuth(secret, claimsType, options...)
+	return initJwtAuth(publicKeyOf(secret), claimsType, options...)
+}
+
+// NewJwtAuthWithPublicKey verifies tokens without needing the signing key.
+func NewJwtAuthWithPublicKey(publicKey *ecdsa.PublicKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
+	return initJwtAuth(publicKey, claimsType, options...)
 }
 
 func NewSingletonJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
-	jwtOnce.Do(func() { initJwtAuthInstance(secret, claimsType, options...) })
+	jwtOnce.Do(func() { jwtAuthInstance = initJwtAuth(publicKeyOf(secret), claimsType, options...) })
 	return jwtAuthInstance
 }
 
+// Authorize checks that a well-formed bearer token is present.
 func (j *JwtAuth) Authorize(r *http.Request) (bool, error) {
-	var jwtTokenString string = r.Header.Get("Authorization")
-	if strings.TrimSpace(jwtTokenString) == "" {
-		return false, fmt.Errorf("authorization header is missing")
+	if _, err := bearerToken(r); err != nil {
+		return false, err
 	}
-	if !strings.HasPrefix(jwtTokenString, "Bearer ") {
-		return false, fmt.Errorf("authorization header must start with 'bearer '")
-	}
-
-	var tokenParts []string = strings.SplitN(jwtTokenString, "Bearer ", 2)
-	if len(tokenParts) != 2 || strings.TrimSpace(tokenParts[1]) == "" {
-		return false, fmt.Errorf("bearer token is missing or malformed")
-	}
-
-	var tokenString string = strings.TrimSpace(tokenParts[1])
-	j.tokenString = tokenString
 	return true, nil
 }
+
+// GetUser verifies the request's token and returns a new claims value.
 func (j *JwtAuth) GetUser(r *http.Request) (any, error) {
-	var jwtToken *jwt.Token
-	var err error
-
-	jwtToken, err = jwt.ParseWithClaims(j.tokenString, j.claimsType, func(t *jwt.Token) (any, error) {
-		return &j.authKey.PublicKey, nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse token: %v", err)
-	}
-
-	if !jwtToken.Valid {
-		return nil, fmt.Errorf("token is invalid")
-	}
-
-	if jwtToken == nil {
-		return nil, fmt.Errorf("no token available")
-	}
-	var expirationTime *jwt.NumericDate
-	expirationTime, err = jwtToken.Claims.GetExpirationTime()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get expiration time: %v", err)
-	}
-	if expirationTime == nil {
-		return nil, fmt.Errorf("expiration time is missing")
-
-	}
-	if expirationTime.Before(time.Now()) {
-		return nil, fmt.Errorf("token has expired")
-	}
-
-	return jwtToken.Claims, nil
+	return j.verifier.parse(r)
 }
 
 func (j *JwtAuth) GetContextKey() any {
 	return j.options.ContextKey
 }
 func WithCustomContextKey(key any) jwtOptionsFunc {
-	return func(ja *JwtAuth) {
-		ja.options.ContextKey = key
+	return func(o *jwtAuthOptions) {
+		o.ContextKey = key
+	}
+}
+func WithIssuer(issuer string) jwtOptionsFunc {
+	return func(o *jwtAuthOptions) {
+		o.Issuer = issuer
+	}
+}
+func WithAudience(audience string) jwtOptionsFunc {
+	return func(o *jwtAuthOptions) {
+		o.Audience = audience
 	}
 }
 
-func initJwtAuthInstance(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) {
-	jwtAuthInstance = initJwtAuth(secret, claimsType, options...)
-}
-func initJwtAuth(secret *ecdsa.PrivateKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
-	var jwtAuth *JwtAuth = &JwtAuth{
-		authKey:    secret,
-		claimsType: claimsType,
-		options: &jwtAuthOptions{
-			ContextKey: DefaultContextKey,
-		},
+func initJwtAuth(publicKey *ecdsa.PublicKey, claimsType plainClaimsInterface, options ...jwtOptionsFunc) *JwtAuth {
+	var opts *jwtAuthOptions = &jwtAuthOptions{
+		ContextKey: DefaultContextKey,
 	}
-
 	for _, opt := range options {
-		opt(jwtAuth)
+		opt(opts)
 	}
-	return jwtAuth
+	return &JwtAuth{
+		verifier: newVerifier(publicKey, claimsType, opts.Issuer, opts.Audience),
+		options:  opts,
+	}
 }

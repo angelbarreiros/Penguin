@@ -8,11 +8,10 @@ func WithQueryParametersObligation(queryParameters []string, hf http.HandlerFunc
 func queryParametersObligation(queryParameters []string) middlewareFunc {
 	return func(hf http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			query := r.URL.Query()
 			for _, queryParameter := range queryParameters {
-				if r.URL.Query().Get(queryParameter) == "" {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusBadRequest)
-					w.Write([]byte(`{"error": "Query parameter ` + queryParameter + ` is required"}`))
+				if query.Get(queryParameter) == "" {
+					writeJSONError(w, http.StatusBadRequest, "Query parameter "+queryParameter+" is required")
 					return
 				}
 			}

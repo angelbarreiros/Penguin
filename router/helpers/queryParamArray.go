@@ -23,7 +23,7 @@ func GetNullUint64ArrayQueryParam(queryParameter string, r *http.Request) ([]sql
 		if !numericRegex.MatchString(v) {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
 		}
-		parsed, err := strconv.ParseUint(v, 10, 64)
+		parsed, err := strconv.ParseUint(v, 10, 63)
 		if err != nil {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "uint")
 		}
@@ -55,7 +55,7 @@ func GetNullInt32ArrayQueryParam(queryParameter string, r *http.Request) ([]sql.
 			result = append(result, sql.NullInt32{Valid: false})
 			continue
 		}
-		if !numericRegex.MatchString(v) {
+		if !signedNumericRegex.MatchString(v) {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int32")
 		}
 		parsed, err := strconv.ParseInt(v, 10, 32)
@@ -154,7 +154,7 @@ func GetNullFloat64ArrayQueryParam(queryParameter string, r *http.Request) ([]sq
 			result = append(result, sql.NullFloat64{Valid: false})
 			continue
 		}
-		if !numericRegex.MatchString(v) && !floatRegex.MatchString(v) {
+		if !floatRegex.MatchString(v) {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
 		}
 		parsed, err := strconv.ParseFloat(v, 64)
@@ -208,7 +208,7 @@ func GetInt32ArrayQueryParam(queryParameter string, r *http.Request) ([]int32, e
 		if v == "" {
 			continue
 		}
-		if !numericRegex.MatchString(v) {
+		if !signedNumericRegex.MatchString(v) {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int32")
 		}
 		parsed, err := strconv.ParseInt(v, 10, 32)
@@ -302,7 +302,7 @@ func GetFloat64ArrayQueryParam(queryParameter string, r *http.Request) ([]float6
 		if v == "" {
 			continue
 		}
-		if !numericRegex.MatchString(v) && !floatRegex.MatchString(v) {
+		if !floatRegex.MatchString(v) {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "float64")
 		}
 		parsed, err := strconv.ParseFloat(v, 64)
@@ -322,7 +322,7 @@ func GetInt64ArrayQueryParam(queryParameter string, r *http.Request) ([]int64, e
 		if v == "" {
 			continue
 		}
-		if !numericRegex.MatchString(v) {
+		if !signedNumericRegex.MatchString(v) {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int64")
 		}
 		parsed, err := strconv.ParseInt(v, 10, 64)
@@ -342,7 +342,7 @@ func GetInt16ArrayQueryParam(queryParameter string, r *http.Request) ([]int16, e
 		if v == "" {
 			continue
 		}
-		if !numericRegex.MatchString(v) {
+		if !signedNumericRegex.MatchString(v) {
 			return nil, routerErrors.ErrQueryParameterWrongType(queryParameter, "int16")
 		}
 		parsed, err := strconv.ParseInt(v, 10, 16)

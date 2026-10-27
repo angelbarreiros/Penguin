@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,10 @@ import (
 type i18n struct {
 	DefaultLocale    string
 	DefaultDirectory string
+
+	// files caches decoded locale files by path; a nil map value means the
+	// file is missing or invalid.
+	files sync.Map
 }
 
 var (
@@ -33,110 +38,84 @@ func SetDirectory(directory string) i18nFunctions {
 		i.DefaultDirectory = directory
 	}
 }
+
+// GetI18nInstance returns the shared instance. Options only apply on the
+// first call; later calls ignore them.
 func GetI18nInstance(fns ...i18nFunctions) *i18n {
-	if instancei18n == nil {
-		oncei18n.Do(func() {
-			instancei18n = &i18n{
-				DefaultLocale:    "en",
-				DefaultDirectory: "i18n",
-			}
-			for _, fn := range fns {
-				fn(instancei18n)
-			}
-		})
-	}
+	oncei18n.Do(func() {
+		instancei18n = &i18n{
+			DefaultLocale:    "en",
+			DefaultDirectory: "i18n",
+		}
+		for _, fn := range fns {
+			fn(instancei18n)
+		}
+		instancei18n.DefaultLocale = normalizeLanguage(instancei18n.DefaultLocale, "en")
+	})
 	return instancei18n
 }
 
+// Reload drops cached locale files so they are read again on next use.
+func (i *i18n) Reload() {
+	i.files.Clear()
+}
+
 // TranslateFromAcceptLanguage traduce una clave basada en el header Accept-Language
-func (i i18n) TranslateFromAcceptLanguage(r *http.Request, key string) string {
+func (i *i18n) TranslateFromAcceptLanguage(r *http.Request, key string) string {
 	language := i.GetLanguage(r)
 	return i.translateWithLanguage(key, language)
 }
 
 // TranslateFromAcceptLanguageWithVars traduce una clave con variables {{0}}, {{1}}, etc.
-func (i i18n) TranslateFromAcceptLanguageWithVars(r *http.Request, key string, args ...any) string {
+func (i *i18n) TranslateFromAcceptLanguageWithVars(r *http.Request, key string, args ...any) string {
 	language := i.GetLanguage(r)
 	translation := i.translateWithLanguage(key, language)
 	return i.replaceVariables(translation, args...)
 }
 
 // TranslateWithLanguage traduce una clave usando solo key + language, sin request.
-func (i i18n) TranslateWithLanguage(key string, language string) string {
-	if len(language) < 2 {
-		language = i.DefaultLocale
-	}
-	language = strings.ToLower(language[:2])
-	return i.translateWithLanguage(key, language)
+func (i *i18n) TranslateWithLanguage(key string, language string) string {
+	return i.translateWithLanguage(key, normalizeLanguage(language, i.DefaultLocale))
 }
 
 // TranslateWithLanguageWithVars traduce una clave usando key + language, sin request,
 // reemplazando variables {{0}}, {{1}}, etc.
-func (i i18n) TranslateWithLanguageWithVars(key string, language string, args ...any) string {
+func (i *i18n) TranslateWithLanguageWithVars(key string, language string, args ...any) string {
 	translation := i.TranslateWithLanguage(key, language)
 	return i.replaceVariables(translation, args...)
 }
 
-// translateWithLanguage realiza la lógica común de traducción para un lenguaje específico
-func (i i18n) translateWithLanguage(key string, language string) string {
-	var sb strings.Builder
-
-	sb.WriteString(language)
-	sb.WriteString(".json")
-	var i18nFilePath string = filepath.Join(i.DefaultDirectory, sb.String())
-
-	if _, err := os.Stat(i18nFilePath); os.IsNotExist(err) {
-		return i.translateFromDefault(key)
+func (i *i18n) loadTranslations(language string) map[string]any {
+	path := filepath.Join(i.DefaultDirectory, language+".json")
+	if cached, ok := i.files.Load(path); ok {
+		return cached.(map[string]any)
 	}
-	file, err := os.Open(i18nFilePath)
-	if err != nil {
-		return key
-	}
-	defer file.Close()
 
 	var translations map[string]any
-	if err := json.NewDecoder(file).Decode(&translations); err != nil {
-		return key
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &translations); err != nil {
+			translations = nil
+		}
 	}
-
-	if value, exists := i.lookupTranslation(translations, key); exists {
-		return value
-	}
-
-	return i.translateFromDefault(key)
+	actual, _ := i.files.LoadOrStore(path, translations)
+	return actual.(map[string]any)
 }
 
-// translateFromDefault busca la traducción en el archivo del idioma por defecto
-func (i i18n) translateFromDefault(key string) string {
-	var sb strings.Builder
-
-	sb.WriteString(i.DefaultLocale)
-	sb.WriteString(".json")
-	var defaultFilePath string = filepath.Join(i.DefaultDirectory, sb.String())
-
-	if _, err := os.Stat(defaultFilePath); os.IsNotExist(err) {
-		return key
-	}
-	file, err := os.Open(defaultFilePath)
-	if err != nil {
-		return key
-	}
-	defer file.Close()
-
-	var translations map[string]any
-	if err := json.NewDecoder(file).Decode(&translations); err != nil {
-		return key
-	}
-
-	if value, exists := i.lookupTranslation(translations, key); exists {
+// translateWithLanguage realiza la lógica común de traducción para un lenguaje específico
+func (i *i18n) translateWithLanguage(key string, language string) string {
+	if value, exists := lookupTranslation(i.loadTranslations(language), key); exists {
 		return value
 	}
-
+	if language != i.DefaultLocale {
+		if value, exists := lookupTranslation(i.loadTranslations(i.DefaultLocale), key); exists {
+			return value
+		}
+	}
 	return key
 }
 
 // replaceVariables reemplaza {{0}}, {{1}}, etc. con los valores proporcionados
-func (i i18n) replaceVariables(text string, args ...any) string {
+func (i *i18n) replaceVariables(text string, args ...any) string {
 	result := text
 	for idx, arg := range args {
 		placeholder := "{{" + strconv.Itoa(idx) + "}}"
@@ -146,7 +125,10 @@ func (i i18n) replaceVariables(text string, args ...any) string {
 }
 
 // lookupTranslation supports both flat keys and dot-separated nested object paths.
-func (i i18n) lookupTranslation(translations map[string]any, key string) (string, bool) {
+func lookupTranslation(translations map[string]any, key string) (string, bool) {
+	if translations == nil {
+		return "", false
+	}
 	if directValue, exists := translations[key]; exists {
 		if stringValue, ok := directValue.(string); ok {
 			return stringValue, true
@@ -157,38 +139,71 @@ func (i i18n) lookupTranslation(translations map[string]any, key string) (string
 		return "", false
 	}
 
-	parts := strings.Split(key, ".")
 	var current any = translations
-
-	for _, part := range parts {
+	for _, part := range strings.Split(key, ".") {
 		object, ok := current.(map[string]any)
 		if !ok {
 			return "", false
 		}
-
 		next, exists := object[part]
 		if !exists {
 			return "", false
 		}
-
 		current = next
 	}
 
 	stringValue, ok := current.(string)
-	if !ok {
-		return "", false
-	}
-
-	return stringValue, true
+	return stringValue, ok
 }
 
-func (i i18n) GetLanguage(r *http.Request) string {
-	al := r.Header.Get("Accept-Language")
-	if al == "" {
+// normalizeLanguage reduces a tag like "es-ES" to its lowercase primary
+// subtag ("es"). Anything that is not 2-3 ASCII letters yields fallback.
+func normalizeLanguage(tag string, fallback string) string {
+	primary, _, _ := strings.Cut(strings.TrimSpace(tag), "-")
+	primary, _, _ = strings.Cut(primary, "_")
+	primary = strings.ToLower(primary)
+	if len(primary) < 2 || len(primary) > 3 {
+		return fallback
+	}
+	for _, c := range primary {
+		if c < 'a' || c > 'z' {
+			return fallback
+		}
+	}
+	return primary
+}
+
+// GetLanguage picks the highest-weighted language from Accept-Language,
+// honouring q-values. Wildcards and malformed entries are skipped.
+func (i *i18n) GetLanguage(r *http.Request) string {
+	type candidate struct {
+		lang  string
+		q     float64
+		order int
+	}
+	var candidates []candidate
+	for order, part := range strings.Split(r.Header.Get("Accept-Language"), ",") {
+		tag, params, _ := strings.Cut(part, ";")
+		lang := normalizeLanguage(tag, "")
+		if lang == "" {
+			continue
+		}
+		q := 1.0
+		if params = strings.TrimSpace(params); strings.HasPrefix(params, "q=") {
+			parsed, err := strconv.ParseFloat(strings.TrimPrefix(params, "q="), 64)
+			if err != nil {
+				continue
+			}
+			q = parsed
+		}
+		if q <= 0 {
+			continue
+		}
+		candidates = append(candidates, candidate{lang: lang, q: q, order: order})
+	}
+	if len(candidates) == 0 {
 		return i.DefaultLocale
 	}
-	if len(al) < 2 {
-		return i.DefaultLocale
-	}
-	return strings.ToLower(al[:2])
+	sort.SliceStable(candidates, func(a, b int) bool { return candidates[a].q > candidates[b].q })
+	return candidates[0].lang
 }

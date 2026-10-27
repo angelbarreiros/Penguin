@@ -2,45 +2,66 @@ package middlewares
 
 import (
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/angelbarreiros/Penguin/router/cors"
 )
 
-func WithCors(corrsConfig *cors.CORSConfig, hf http.HandlerFunc) http.HandlerFunc {
-	return corsMiddleware(corrsConfig)(hf)
+func WithCors(corsConfig *cors.CORSConfig, hf http.HandlerFunc) http.HandlerFunc {
+	return corsMiddleware(corsConfig)(hf)
 }
 
-func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
+func corsMiddleware(corsConfig *cors.CORSConfig) middlewareFunc {
 	return func(hf http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if corrsConfig == nil {
+			if corsConfig == nil {
 				hf(w, r)
 				return
 			}
 
 			origin := r.Header.Get("Origin")
-			allowAllOrigins := slices.Contains(corrsConfig.AllowedOrigins(), cors.AllowAllOrigin)
+			header := w.Header()
+			// The response depends on Origin whenever origins are echoed back,
+			// so caches must key on it.
+			if !corsConfig.AllowsAllOrigins() {
+				header.Add("Vary", "Origin")
+			}
 
-			if r.Method == http.MethodOptions {
-				// For OPTIONS: echo back the actual origin if allowed, or "*" if all origins allowed
-				if allowAllOrigins {
-					w.Header().Set("Access-Control-Allow-Origin", cors.AllowAllOrigin)
-				} else if origin != "" && slices.Contains(corrsConfig.AllowedOrigins(), origin) {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-				}
+			isPreflight := r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != ""
+			if isPreflight {
+				header.Add("Vary", "Access-Control-Request-Method")
+				header.Add("Vary", "Access-Control-Request-Headers")
+			}
 
-				w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
-				w.Header().Set("Access-Control-Max-Age", strconv.Itoa(corrsConfig.MaxAge()))
-				if corrsConfig.AllowCredentials() {
-					w.Header().Set("Access-Control-Allow-Credentials", "true")
+			// Empty origin: same-origin or non-browser request, no CORS headers needed.
+			if origin == "" {
+				if isPreflight && !corsConfig.OptionsPassthrough() {
+					w.WriteHeader(http.StatusNoContent)
+					return
 				}
-				if corrsConfig.ExposedHeaders() != nil {
-					w.Header().Set("Access-Control-Expose-Headers", strings.Join(corrsConfig.ExposedHeaders(), ","))
-				}
-				if corrsConfig.OptionsPassthrough() {
+				hf(w, r)
+				return
+			}
+
+			if !corsConfig.IsOriginAllowed(origin) {
+				writeJSONError(w, http.StatusForbidden, "Origin not allowed")
+				return
+			}
+
+			if corsConfig.AllowsAllOrigins() {
+				header.Set("Access-Control-Allow-Origin", cors.AllowAllOrigin)
+			} else {
+				header.Set("Access-Control-Allow-Origin", origin)
+			}
+			if corsConfig.AllowCredentials() {
+				header.Set("Access-Control-Allow-Credentials", "true")
+			}
+
+			if isPreflight {
+				header.Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders(), ", "))
+				header.Set("Access-Control-Max-Age", strconv.Itoa(corsConfig.MaxAge()))
+				if corsConfig.OptionsPassthrough() {
 					hf(w, r)
 					return
 				}
@@ -48,32 +69,8 @@ func corsMiddleware(corrsConfig *cors.CORSConfig) middlewareFunc {
 				return
 			}
 
-			// For regular requests: empty origin is allowed (same-origin or non-browser tools)
-			// Only reject if origin is non-empty AND not in allowed list
-			if !allowAllOrigins && origin != "" && !slices.Contains(corrsConfig.AllowedOrigins(), origin) {
-				// Add CORS headers to error response so browser can read it
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte(`{"error": "Origin not allowed"}`))
-				return
-			}
-
-			// Set CORS headers for allowed requests
-			if allowAllOrigins {
-				w.Header().Set("Access-Control-Allow-Origin", cors.AllowAllOrigin)
-			} else if origin != "" {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-			}
-
-			w.Header().Set("Access-Control-Allow-Headers", strings.Join(corrsConfig.AllowedHeaders(), ","))
-			w.Header().Set("Access-Control-Max-Age", strconv.Itoa(corrsConfig.MaxAge()))
-			if corrsConfig.AllowCredentials() {
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-			}
-			if corrsConfig.ExposedHeaders() != nil {
-				w.Header().Set("Access-Control-Expose-Headers", strings.Join(corrsConfig.ExposedHeaders(), ","))
+			if len(corsConfig.ExposedHeaders()) > 0 {
+				header.Set("Access-Control-Expose-Headers", strings.Join(corsConfig.ExposedHeaders(), ", "))
 			}
 			hf(w, r)
 		}

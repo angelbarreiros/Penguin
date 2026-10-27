@@ -34,7 +34,7 @@ type rbacAuthStub struct {
 	allowed bool
 }
 
-func (a *rbacAuthStub) RBAC(_ []string) bool {
+func (a *rbacAuthStub) RBAC(_ any, _ []string) bool {
 	return a.allowed
 }
 
